@@ -47,11 +47,10 @@ void initADC ( void ) {
 }
 
 uint16_t readADC ( const uint8_t channel ) {
-	ADMUX |= ( channel & 0x07 ) ;                           // Cut off selected channel value to the limited bits available
-	ADCSRA |= ( 1 << ADSC ) ;                               // Start A/D conversion
-  while ( ADCSRA & ( 1 << ADSC ) ) ;                      // Wait while the conversion completes
-  uint16_t result =  ADCL + ( ( uint16_t ) ADCH << 8 ) ;  // Bit-shift High nibble to get the result of the conversion
-  return result ;
+	ADMUX |= ( channel & 0x07 ) ;                // Cut off selected channel value to the limited bits available
+	ADCSRA |= ( 1 << ADSC ) ;                    // Start A/D conversion
+  while ( ADCSRA & ( 1 << ADSC ) ) ;           // Wait while the conversion completes
+  return ( ( uint16_t ) ADCH << 8 ) + ADCL ;   // Bit-shift High nibble to get the result of the conversion
 }
 
 void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_second , char *return_str ) {
