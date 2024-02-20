@@ -24,6 +24,15 @@
 
 // SCL -> PC5 | SDA -> PC4
 
+// Function prototypes
+int16_t main ( void ) ;
+void initADC ( void ) ;
+uint16_t readADC ( const uint8_t channel ) ;
+uint32_t map ( uint32_t x , uint32_t in_min , uint32_t in_max , uint32_t out_min , uint32_t out_max ) ;
+void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_second , char *return_str ) ;
+void printLine ( uint32_t value , char *text , uint8_t x_pos , uint8_t y_pos ) ;
+void updateText ( char *original , char *new_text ) ;
+
 // Variables
 char TEXT_BUFFER [ row_len ] ;
 char NUM_BUFFER [ num_len ] ;
