@@ -31,7 +31,6 @@ uint16_t readADC ( const uint8_t channel ) ;
 uint32_t map ( uint32_t x , uint32_t in_min , uint32_t in_max , uint32_t out_min , uint32_t out_max ) ;
 void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_second , char *return_str ) ;
 void printLine ( uint32_t value , char *text , uint8_t x_pos , uint8_t y_pos ) ;
-void updateText ( char *original , char *new_text ) ;
 
 // Variables
 char TEXT_BUFFER [ row_len ] ;
@@ -62,7 +61,7 @@ void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_s
   uint8_t idx = 0 ;
   char blanks [ ] = "     " ;
   
-  while ( first [ idx ] != ':' ) {    // You have to provide a semicolon character in the message, as it is used as the divider
+  while ( first [ idx ] != ':' ) { // You have to provide a semicolon character in the message, as it is used as the divider
     idx++ ;
   }
 
@@ -72,14 +71,12 @@ void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_s
 }
 
 void printLine ( uint32_t value , char *text , uint8_t x_pos , uint8_t y_pos ) {
+  // Use when displaying characters as well as numerical values
   itoa ( value , NUM_BUFFER , base ) ;
-  addChars ( text , row_len , NUM_BUFFER , num_len , TEXT_BUFFER ) ;
+  memcpy ( MESSAGE , text , row_len ) ;
+  addChars ( MESSAGE , row_len , NUM_BUFFER , num_len , TEXT_BUFFER ) ;
   SSD1306_SetPosition ( x_pos , y_pos ) ;
   SSD1306_DrawString ( TEXT_BUFFER , NORMAL ) ;
-}
-
-void updateText ( char *original , char *new_text ) {
-  memcpy ( original , new_text , row_len ) ;
 }
 
 int16_t main ( void ) {
@@ -93,10 +90,8 @@ int16_t main ( void ) {
   while ( 1 ) {
     adcVal = readADC ( adChannel ) ;
     percentage = map ( adcVal , 0 , 1023 , 0 , 100 ) ;
-    updateText ( MESSAGE , "ADC Value:" ) ;
-    printLine ( adcVal , MESSAGE , 0 , 0 ) ;
-    updateText ( MESSAGE , "Percentage:" ) ;
-    printLine ( percentage , MESSAGE , 0 , 5 ) ;
+    printLine ( adcVal , "ADC Value:" , 0 , 0 ) ;
+    printLine ( percentage , "Percentage:" , 0 , 3 ) ;
   }
   return 0 ;
 }
