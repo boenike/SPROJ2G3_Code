@@ -7,13 +7,12 @@
  * Course: BEng in Electronics
  */
 
-// Definitions for the preprocessor
+// Constants
 #define row_len 21
 #define num_len 10
-#define adChannel PC0
+#define adChannel PC1
 #define base 10
 
-// Including the necessary libraries
 #include <stdio.h>
 #include <avr/io.h>
 #include <stdlib.h>
@@ -23,57 +22,72 @@
 #include "twi.h"
 #include "ssd1306.h"
 
-// For I2C Comm.: SCL -> PC5 | SDA -> PC4
+// SCL -> PC5 | SDA -> PC4
 
 // Variables
-char message [ ] = " ADC Value: " ;
 char TEXT_BUFFER [ row_len ] ;
 char NUM_BUFFER [ num_len ] ;
-uint8_t clear_offset ;
+char MESSAGE [ row_len ] = "                    " ;
 uint16_t adcVal ;
+uint32_t percentage ;
 
-// Function declarations
-int16_t main ( void ) ;
-void initADC ( void ) ;
-uint16_t readADC ( const uint8_t channel ) ;
-void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_second , char *return_str ) ;
-
-// Function descriptions
 void initADC ( void ) {
-  ADMUX = 0x00 ;                            // Clear ADC Multiplexer register at start
-  ADMUX |= ( 1 << REFS0 ) ;                 // Set reference voltage to AVcc (5V)
+  ADMUX = 0x00 ;                            // Clear at start
+  ADMUX |= ( 1 << REFS0 ) ;                 // Set reference voltage to AVcc
   ADCSRA |= ( 1 << ADEN ) | ( 1 << ADPS2 ) | ( 1 << ADPS1 ) | ( 1 << ADPS0 ) ;
   // Enable ADC and set prescaler to 128
 }
 
 uint16_t readADC ( const uint8_t channel ) {
-	ADMUX |= ( channel & 0x07 ) ;                // Cut off selected channel value to the limited bits available
-	ADCSRA |= ( 1 << ADSC ) ;                    // Start A/D conversion
-  while ( ADCSRA & ( 1 << ADSC ) ) ;           // Wait while the conversion completes
-  return ( ( uint16_t ) ADCH << 8 ) + ADCL ;   // Bit-shift High nibble to get the result of the conversion
+	ADMUX |= ( channel & 0x07 ) ;               // cut off channel value to the limited bits available
+	ADCSRA |= ( 1 << ADSC ) ;                   // Start ADC conversion
+  while ( ADCSRA & ( 1 << ADSC ) ) ;          // Wait while the conversion completes
+  return ( ( uint16_t ) ADCL ) + ( ( uint16_t ) ADCH << 8 ) ;  // Bit-shift High nibble to get the result of the conversion
+}
+
+uint32_t map ( uint32_t x , uint32_t in_min , uint32_t in_max , uint32_t out_min , uint32_t out_max ) {
+    return ( x - in_min ) * ( out_max - out_min ) / ( in_max - in_min ) + out_min ;
 }
 
 void addChars ( char *first , uint8_t size_first , char *second , uint8_t size_second , char *return_str ) {
+  uint8_t idx = 0 ;
+  char blanks [ ] = "     " ;
+  
+  while ( first [ idx ] != ':' ) {    // You have to provide a semicolon character in the message, as it is used as the divider
+    idx++ ;
+  }
+
   memcpy ( return_str , first , size_first ) ;
-	memcpy ( &return_str [ size_first -1 ] , second , size_second ) ;
+	memcpy ( &return_str [ idx + 1 ] , second , size_second ) ;
+  memcpy ( &return_str [ idx + strlen ( second ) + 1 ] , blanks , sizeof ( blanks ) ) ;
+}
+
+void printLine ( uint32_t value , char *text , uint8_t x_pos , uint8_t y_pos ) {
+  itoa ( value , NUM_BUFFER , base ) ;
+  addChars ( text , row_len , NUM_BUFFER , num_len , TEXT_BUFFER ) ;
+  SSD1306_SetPosition ( x_pos , y_pos ) ;
+  SSD1306_DrawString ( TEXT_BUFFER , NORMAL ) ;
+}
+
+void updateText ( char *original , char *new_text ) {
+  memcpy ( original , new_text , row_len ) ;
 }
 
 int16_t main ( void ) {
 
-  // Initializing the SSD1306 0.96" 128x64 OLED display and the ADC
+  // Initializing the display and ADC
   initADC ( ) ;
   SSD1306_Init ( ) ;
   SSD1306_ClearScreen ( ) ;
 
+  // Infinite loop
   while ( 1 ) {
-    adcVal = readADC ( adChannel ) ;        // Read the analog input voltage
-    itoa ( adcVal , NUM_BUFFER , base ) ;   // Convert numeric value to char array representation
-    addChars ( message , sizeof ( message ) , NUM_BUFFER , sizeof ( NUM_BUFFER ) , TEXT_BUFFER ) ;
-
-    SSD1306_SetPosition ( 0 , 0 ) ;
-    SSD1306_DrawString ( TEXT_BUFFER , NORMAL ) ;
-
+    adcVal = readADC ( adChannel ) ;
+    percentage = map ( adcVal , 0 , 1023 , 0 , 100 ) ;
+    updateText ( MESSAGE , "ADC Value:" ) ;
+    printLine ( adcVal , MESSAGE , 0 , 0 ) ;
+    updateText ( MESSAGE , "Percentage:" ) ;
+    printLine ( percentage , MESSAGE , 0 , 5 ) ;
   }
-
   return 0 ;
 }
