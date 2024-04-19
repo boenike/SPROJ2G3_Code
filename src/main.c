@@ -10,12 +10,7 @@
  */
 
 // Constants
-#define ROW_LEN 21
-#define NUM_LEN 6
-#define DEC_PRECISION 2
-#define RADIX 10
 #define ADC_PIN PC0
-#define OLED_ADDR 0x7B
 
 // Include necessary libraries
 #include <stdio.h>
@@ -28,13 +23,10 @@
 #include <util/delay.h>
 #include "i2cmaster.h"
 #include "lm75.h"
-#include "ssd1306.h"      // SSD1306 v3.0.1 by Matiasus
+#include "ssd1306.h"      // SSD1306 v3.0.1 library by Matiasus
+#include "oled_wrapper.h"
 
 // I2C Communication Pins:   SCL -> PC5 | SDA -> PC4
-
-typedef enum { INTEGER , DOUBLE } numtype_t ;
-typedef enum { BEFORE , AFTER } numplacement_t ;
-typedef union { double dbl ; int32_t intgr ; } number_t ;
 
 void initADC ( void ) {
   ADMUX = ( 1 << REFS0 ) ;    // Set reference voltage to AVcc
@@ -51,61 +43,6 @@ uint16_t readADC ( const uint8_t channel ) {
 
 uint32_t map ( uint32_t x , uint32_t in_min , uint32_t in_max , uint32_t out_min , uint32_t out_max ) {
     return ( x - in_min ) * ( out_max - out_min ) / ( in_max - in_min ) + out_min ;
-}
-
-void printNumber ( uint8_t x_pos , uint8_t y_pos , numtype_t NUMTYPE , number_t *NUMBER , enum E_Font font ) {
-  char NUM_BUFFER [ NUM_LEN ] ;
-
-  switch ( NUMTYPE ) {
-   case INTEGER : itoa ( NUMBER->intgr , NUM_BUFFER , RADIX ) ; break ;
-   case DOUBLE : dtostrf ( NUMBER->dbl , NUM_LEN , DEC_PRECISION , NUM_BUFFER ) ; break ;
-   default : break ;
-  }
-
-  SSD1306_SetPosition ( x_pos , y_pos ) ;
-  SSD1306_DrawString ( NUM_BUFFER , font ) ;
-}
-
-void printString ( char *text , uint8_t x_pos , uint8_t y_pos , enum E_Font font ) {
-  SSD1306_SetPosition ( x_pos , y_pos ) ;
-  SSD1306_DrawString ( text , font ) ;
-}
-
-void addChars ( char *first , char *second , char *return_str ) {
-  uint8_t ctr , idx = strlen ( first ) , offset = strlen ( second ) , remainder = strlen ( return_str ) - idx - offset ;
-  
-  // Copy the contents of the two char arrays into the buffer
-  memcpy ( return_str , first , idx ) ;
-	memcpy ( &return_str [ idx ] , second , offset ) ;       // Add the numerical value to the char array
-
-  if ( remainder > 0 ) {
-    char blanks [ remainder ] ;
-    for ( ctr = 0 ; ctr < remainder ; ctr++ ) {
-      blanks [ ctr ] = ' ' ;
-    }
-    memcpy ( &return_str [ idx + offset ] , blanks , remainder ) ;   // Add some blank space characters at the end
-  }
-}
-
-void printStringWithNumber ( char *text , uint8_t x_pos , uint8_t y_pos , numtype_t NUMTYPE , number_t *NUMBER , enum E_Font font , numplacement_t placement ) {
-  // Use when displaying characters as well as numerical values
-
-  char TEXT_BUFFER [ strlen ( text ) + NUM_LEN ] , NUM_BUFFER [ NUM_LEN ] ;
-
-  switch ( NUMTYPE ) {
-   case INTEGER : itoa ( NUMBER->intgr , NUM_BUFFER , RADIX ) ; break ;
-   case DOUBLE : dtostrf ( NUMBER->dbl , NUM_LEN , DEC_PRECISION , NUM_BUFFER ) ; break ;
-   default : break ;
-  }
-
-  switch ( placement ) {
-    case BEFORE : addChars ( NUM_BUFFER , text , TEXT_BUFFER ) ; break ;
-    case AFTER : addChars ( text , NUM_BUFFER , TEXT_BUFFER ) ; break ;
-    default : break ;
-  }
-  
-  SSD1306_SetPosition ( x_pos , y_pos ) ;
-  SSD1306_DrawString ( TEXT_BUFFER , font ) ;
 }
 
 int main ( void ) {
