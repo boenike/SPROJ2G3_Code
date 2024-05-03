@@ -30,14 +30,25 @@
 #include "i2cmaster.h"
 #include "lm75.h"
 
-#define ADC_Pin PC0
+#define Onboard_LED PB5
+#define Heart_Enable PB1
+
+#define Temp_Input PC1
+#define Bat_Input PC2
+
+#define Left_Button PD2
+#define Right_Button PD3
+#define Heart_Input PD4
+
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
+//#define F_CPU 16000000UL -> Only define outside of PlatformIO
 
 String MSG ;
 uint16_t potval ;
-volatile uint8_t butval = 0 ;
+volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , clear_en = 0 , graph_en = 1 ;
 double pctg , temp ;
+const double freezer = 60.0 ;
 
 // I2C Communication Pins:   SCL -> PC5 | SDA -> PC4
 // ssd1306_drawLine(x1,y1,x2,y2)
@@ -51,31 +62,39 @@ double pctg , temp ;
       -              const char *text = msg.c_str ( ) ;
  */
 
-void init_External_Interrupts ( void ) {
-  PCICR = ( 1 << PCIE1 ) ;
-  PCMSK1 = ( 1 << PCINT9 ) ;
-  //EICRA = ( 1 << ISC11 ) | ( 1 << ISC01 ) ;
-  //EIMSK = ( 1 << INT1 ) | ( 1 << INT0 ) ;
-  sei ( ) ;       // Enable global interrupts 
-  // Trigger an interrupt at a falling edge
-  // At both INT0 and INT1
-}
-
-ISR ( PCINT1_vect ) {
-   if ( ( PINC & ( 1 << PC1 ) ) == 0 ) {
+/*ISR ( PCINT1_vect ) {
+   if ( ( PINC & ( 1 << PC0 ) ) == 0 ) {
       butval = !butval ;
       if ( butval ) PORTB |= ( 1 << PB5 ) ;
       else PORTB = 0x00 ;
    }
+}*/
+
+void init_Pins ( void ) {
+  DDRB = ( 1 << Onboard_LED ) | ( 1 << Heart_Enable ) ;   // On-board LED and EN pin as Outputs
+  PORTB = 0x00 ;  // Turn off at first
+
+  DDRC = 0xF0 ;  // Declare Analogue pins as Inputs
+  PORTC = 0x30 ; // Set SDA & SCL pins to HIGH for I2C communication
+
+  DDRD = ~(( 1 << Left_Button ) | ( 1 << Right_Button ) | ( 1 << Heart_Input )) ;   // Declare the stated pins as Inputs
+  PORTD = ( 1 << Left_Button ) | ( 1 << Right_Button ) ;     // Enable internal pull-up resistors at the Buttons 
 }
 
-void initADC ( void ) {
+void init_External_Interrupts ( void ) {
+  EICRA = ( 1 << ISC11 ) | ( 1 << ISC01 ) ;
+  EIMSK = ( 1 << INT1 ) | ( 1 << INT0 ) ;
+  sei ( ) ;       // Enable global interrupts 
+  // Trigger an interrupt at a falling edge at both INT0 and INT1
+}
+
+void init_ADC ( void ) {
   ADMUX = ( 1 << REFS0 ) ;    // Set reference voltage to AVcc
   ADCSRA = ( 1 << ADEN ) | ( 1 << ADPS2 ) | ( 1 << ADPS1 ) | ( 1 << ADPS0 ) ;
   // Enable ADC and set prescaler to 128
 }
 
-uint16_t readADC ( const uint8_t channel ) {
+uint16_t read_ADC ( const uint8_t channel ) {
 	ADMUX |= ( channel & 0x07 ) ;               // Cut off channel value to the limited bits available
 	ADCSRA |= ( 1 << ADSC ) ;                   // Start ADC conversion
   while ( ADCSRA & ( 1 << ADSC ) ) ;          // Wait while the conversion completes
@@ -90,20 +109,36 @@ void drawBoundary ( void ) {
   ssd1306_drawLine ( OLED_WIDTH - 1 , 0 , OLED_WIDTH - 1 , OLED_HEIGHT - 1 ) ; // Right
   ssd1306_drawLine ( 0 , OLED_HEIGHT - 1 , OLED_WIDTH - 1 , OLED_HEIGHT - 1 ) ; // Bottom
   ssd1306_drawLine ( 0 , 0 , 0 , OLED_HEIGHT - 1 ) ; // Left
+  ssd1306_printFixed ( 30 , 5 , " SPROJ2EEG3 " , STYLE_BOLD ) ;
+}
+
+ISR ( INT0_vect ) {
+  if ( !select ) {
+    menu_checker = !menu_checker ;
+    switched = 0 ;
+  }
+}
+
+ISR ( INT1_vect ) {
+  select = !select ;
+  clear_en = 1 ;
+  switch ( select ) {
+    case 0 :
+      switched = 0 ;
+      break ;
+    case 1 :
+      graph_en = 1 ;
+      break ;
+    default :
+      break ;
+  }
 }
 
 void setup ( void ) {
 
-  DDRC = 0xF0 ;   // Declare the Buttons as Inputs
-  PORTC = ( 1 << PC1 ) ;  // Enable internal pull-up resistors at the Button
-
-  DDRD = 0xFF ;   // Declare the LEDs as Outputs
-  PORTD = 0x00 ;  // At first, turn off all the LEDs
-  
-  DDRB = 0xFF ;   // On-board LED as Output
-
-  initADC ( ) ;
+  init_Pins ( ) ; 
   init_External_Interrupts ( ) ;
+  init_ADC ( ) ;
   i2c_init ( ) ;
   lm75_init ( ) ;
 
@@ -112,22 +147,70 @@ void setup ( void ) {
   ssd1306_clearScreen ( ) ;
   ssd1306_positiveMode ( ) ;
   drawBoundary ( ) ;
-  ssd1306_printFixed ( 30 , 5 , " SPROJ2EEG3 " , STYLE_BOLD ) ;
 }
 
 void loop ( void ) {
-  temp = get_temperature ( ) ;
-  potval = readADC ( ADC_Pin ) ;
-  pctg = __map ( (double) potval , 0.0 , 1023.0 , 0.0 , 100.0 ) ;
+  EFontStyle real_style , graph_style ;
 
-  MSG = "ADC value: " + String ( potval ) + "   " ;
-  ssd1306_printFixed ( 3 , 18 , MSG.c_str() , STYLE_NORMAL ) ;
+  if ( clear_en ) {
+    clear_en = 0 ;
+    switch ( select ) {
+      case 0 :
+        ssd1306_printFixed ( 3 , 18 , "                    " , STYLE_NORMAL ) ;
+        ssd1306_printFixed ( 3 , 25 , "                    " , STYLE_NORMAL ) ;
+        ssd1306_printFixed ( 3 , 32 , "                    " , STYLE_NORMAL ) ;
+        break ;
+      case 1 :
+        ssd1306_printFixed ( 3 , 25 , "                    " , STYLE_NORMAL ) ;
+        ssd1306_printFixed ( 3 , 45 , "                    " , STYLE_NORMAL ) ;
+        break ;
+      default :
+        break ;
+    }
+  }
 
-  MSG = "Percentage: " + String ( pctg ) + "   " ;
-  ssd1306_printFixed ( 3 , 25 , MSG.c_str() , STYLE_NORMAL ) ;
+  if ( !select && !switched ) {
+    switched = 1 ;
 
-  MSG = "Temperature: " + String ( temp ) + "  " ;
-  ssd1306_printFixed ( 3 , 32 , MSG.c_str() , STYLE_NORMAL ) ;
+    switch ( menu_checker ) {
+      case 0 :
+        real_style = STYLE_BOLD ;
+        graph_style = STYLE_NORMAL ;
+        break ;
+      case 1 :
+        real_style = STYLE_NORMAL ;
+        graph_style = STYLE_BOLD ;
+        break ;
+      default :
+        break ;
+    }
 
-  _delay_ms ( 50.0 ) ;
+    ssd1306_printFixed ( 18 , 25 , "Real-time data" , real_style ) ;
+    ssd1306_printFixed ( 18 , 45 , "Heartrate graph" , graph_style ) ;
+  }
+
+  if ( select ) {
+
+    if ( menu_checker && graph_en ) {
+      graph_en = 0 ;
+      ssd1306_printFixed ( 5 , 32 , "Under construction!" , STYLE_BOLD ) ;
+    }
+
+    if ( !menu_checker ) {
+      temp = get_temperature ( ) ;
+      potval = read_ADC ( Temp_Input ) ;
+      pctg = __map ( (double) potval , 0.0 , 1023.0 , 0.0 , 100.0 ) ;
+
+      MSG = "ADC value:   " + String ( potval ) + "   " ;
+      ssd1306_printFixed ( 3 , 18 , MSG.c_str() , STYLE_NORMAL ) ;
+
+      MSG = "Percentage:  " + String ( pctg ) + "   " ;
+      ssd1306_printFixed ( 3 , 25 , MSG.c_str() , STYLE_NORMAL ) ;
+
+      MSG = "Temperature: " + String ( temp ) + "  " ;
+      ssd1306_printFixed ( 3 , 32 , MSG.c_str() , STYLE_NORMAL ) ;
+
+      _delay_ms ( freezer ) ;
+    }
+  }
 }
