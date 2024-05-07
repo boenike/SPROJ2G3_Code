@@ -3,7 +3,7 @@
  * Campus: Sonderborg
  * File: main.cpp
  * Author: Bence Toth
- * Date: 30/04/2024
+ * Date: 07/05/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) interfaced via I2C
@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include <avr/interrupt.h>
 #include <avr/eeprom.h>
 #include <util/delay.h>
@@ -42,33 +43,75 @@
 
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
+#define GRAPH_MAX_VERT_POS 0.0F
+#define GRAPH_MIN_VERT_POS 63.0F
+#define NUM_DATAPOINTS 20
 //#define F_CPU 16000000UL -> Only define outside of PlatformIO
 
 String MSG ;
-uint16_t potval ;
-volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , clear_en = 0 , graph_en = 1 ;
-double pctg , temp ;
-const double freezer = 60.0 ;
+uint16_t potval = 0 ;
+volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 ;
+double temp_analog = 0.0 , temp_digital = 0.0 ;
+const double freezer = 30.0 ;
+double datapoints [ NUM_DATAPOINTS ] ;
+uint8_t current_datapoint_pos = 0 , saved_datapoints = 0 ;
 
 // I2C Communication Pins:   SCL -> PC5 | SDA -> PC4
-// ssd1306_drawLine(x1,y1,x2,y2)
 
-/* To print out numbers with strings:
-      - 1. Declare a String variable,
-      - 2. Modify it with the desired chars and nums,
-      - 3. Convert String object to c-style char array,
-      - For example: String msg ;
-      -              msg = "Hello " + String ( value ) ;
-      -              const char *text = msg.c_str ( ) ;
- */
+void clearDataPoints ( double *data , uint8_t data_length ) {
+  uint8_t ctr ;
+  for ( ctr = 0 ; ctr < data_length ; ctr++ ) {
+    data [ ctr ] = 0.0 ;
+  }
+}
 
-/*ISR ( PCINT1_vect ) {
-   if ( ( PINC & ( 1 << PC0 ) ) == 0 ) {
-      butval = !butval ;
-      if ( butval ) PORTB |= ( 1 << PB5 ) ;
-      else PORTB = 0x00 ;
-   }
-}*/
+double convertInterval ( double x , double in_min , double in_max , double out_min , double out_max ) {
+  return ( x - in_min ) * ( out_max - out_min ) / ( in_max - in_min ) + out_min ; }
+
+void drawBoundary ( void ) {
+  ssd1306_drawHLine ( 0 , 0 , OLED_WIDTH - 1 ) ; // Top
+  ssd1306_drawHLine ( 0 , OLED_HEIGHT - 1 , OLED_WIDTH - 1 ) ; // Bottom
+  ssd1306_drawVLine ( 0 , 0 , OLED_HEIGHT - 1 ) ; // Left
+  ssd1306_drawVLine ( OLED_WIDTH - 1 , 0 , OLED_HEIGHT - 1 ) ; // Right
+  ssd1306_printFixed ( 30 , 0 , " SPROJ2EEG3 " , STYLE_BOLD ) ;
+}
+
+void findSmallestAndBiggest ( double *data , double *min , double *max , uint16_t stop_pos ) {
+  uint8_t ctr ;
+  double smallest = data [ 0 ] , biggest = data [ 0 ] ;
+  for ( ctr = 0 ; ctr < stop_pos ; ctr++ ) {
+    if ( data [ ctr ] < smallest ) smallest = data [ ctr ] ;
+    if ( data [ ctr ] > biggest ) biggest = data [ ctr ] ;
+  }
+  * min = smallest ;
+  * max = biggest ;
+}
+
+void drawDataPoints ( double *data , uint8_t stop_position ) {
+  uint8_t ctr , x1 = 3 , x2 , y1 , y2 , offset ;
+  double MIN , MAX ;
+  findSmallestAndBiggest ( datapoints , &MIN , &MAX , saved_datapoints ) ;
+
+  offset = (uint8_t) floor ( (double) OLED_WIDTH / stop_position ) ;
+  x2 = offset ;
+  y1 = (uint8_t) convertInterval ( data [ 0 ] , MIN , MAX , GRAPH_MIN_VERT_POS , GRAPH_MAX_VERT_POS ) ;
+
+  for ( ctr = 0 ; ctr < stop_position ; ctr++ ) {
+    y2 = (uint8_t) convertInterval ( data [ ctr ] , MIN , MAX , GRAPH_MIN_VERT_POS , GRAPH_MAX_VERT_POS ) ;
+    ssd1306_drawLine ( x1 , y1 , x2 , y2 ) ;
+    x1 = x2 ;
+    y1 = y2 ;
+    x2 += offset ;
+  }
+}
+
+void shiftDataPoints ( double *data , uint8_t data_length , double new_data ) {
+  uint8_t ctr ;
+  for ( ctr = 0 ; ctr < ( data_length - 1 ) ; ctr++ ) {
+    data [ ctr ] = data [ ctr + 1 ] ;
+  }
+  data [ data_length - 1 ] = new_data ;
+}
 
 void init_Pins ( void ) {
   DDRB = ( 1 << Onboard_LED ) | ( 1 << Heart_Enable ) ;   // On-board LED and EN pin as Outputs
@@ -101,21 +144,29 @@ uint16_t read_ADC ( const uint8_t channel ) {
   return ( ( uint16_t ) ADCL + ( ( uint16_t ) ADCH << 8 ) ) ;  // Bit-shift High nibble to get the result of the conversion
 }
 
-double __map ( double x , double in_min , double in_max , double out_min , double out_max ) {
-  return ( x - in_min ) * ( out_max - out_min ) / ( in_max - in_min ) + out_min ; }
+void realTimeData ( void ) {
+  temp_digital = get_temperature ( ) ;
+  potval = read_ADC ( Temp_Input ) ;
+  temp_analog = convertInterval ( (double) potval , 0.0 , 1023.0 , 35.0 , 42.0 ) ;
 
-void drawBoundary ( void ) {
-  ssd1306_drawLine ( 0 , 0 , OLED_WIDTH - 1 , 0 ) ; // Top
-  ssd1306_drawLine ( OLED_WIDTH - 1 , 0 , OLED_WIDTH - 1 , OLED_HEIGHT - 1 ) ; // Right
-  ssd1306_drawLine ( 0 , OLED_HEIGHT - 1 , OLED_WIDTH - 1 , OLED_HEIGHT - 1 ) ; // Bottom
-  ssd1306_drawLine ( 0 , 0 , 0 , OLED_HEIGHT - 1 ) ; // Left
-  ssd1306_printFixed ( 30 , 5 , " SPROJ2EEG3 " , STYLE_BOLD ) ;
+  MSG = "Armpit temp.: " + String ( temp_analog ) + "   " ;
+  ssd1306_printFixed ( 3 , 24 , MSG.c_str() , STYLE_NORMAL ) ;
+
+  MSG = "Finger temp.: " + String ( temp_digital ) + "  " ;
+  ssd1306_printFixed ( 3 , 40 , MSG.c_str() , STYLE_NORMAL ) ;
 }
 
 ISR ( INT0_vect ) {
   if ( !select ) {
     menu_checker = !menu_checker ;
     switched = 0 ;
+  }
+
+  if ( select && !menu_checker ) snapshot_en = 1 ;
+
+  if ( select && menu_checker ) {
+    clear_graph_en = 1 ;
+    graph_en = 1 ;
   }
 }
 
@@ -135,17 +186,18 @@ ISR ( INT1_vect ) {
 }
 
 void setup ( void ) {
-
   init_Pins ( ) ; 
   init_External_Interrupts ( ) ;
   init_ADC ( ) ;
   i2c_init ( ) ;
   lm75_init ( ) ;
 
-  ssd1306_setFixedFont ( ssd1306xled_font6x8 ) ;
+  clearDataPoints ( datapoints , NUM_DATAPOINTS ) ;
+
   ssd1306_128x64_i2c_init ( ) ;
   ssd1306_clearScreen ( ) ;
   ssd1306_positiveMode ( ) ;
+  ssd1306_setFixedFont ( ssd1306xled_font6x8 ) ;
   drawBoundary ( ) ;
 }
 
@@ -154,19 +206,8 @@ void loop ( void ) {
 
   if ( clear_en ) {
     clear_en = 0 ;
-    switch ( select ) {
-      case 0 :
-        ssd1306_printFixed ( 3 , 18 , "                    " , STYLE_NORMAL ) ;
-        ssd1306_printFixed ( 3 , 25 , "                    " , STYLE_NORMAL ) ;
-        ssd1306_printFixed ( 3 , 32 , "                    " , STYLE_NORMAL ) ;
-        break ;
-      case 1 :
-        ssd1306_printFixed ( 3 , 25 , "                    " , STYLE_NORMAL ) ;
-        ssd1306_printFixed ( 3 , 45 , "                    " , STYLE_NORMAL ) ;
-        break ;
-      default :
-        break ;
-    }
+    ssd1306_clearScreen ( ) ;
+    drawBoundary ( ) ;
   }
 
   if ( !select && !switched ) {
@@ -185,32 +226,41 @@ void loop ( void ) {
         break ;
     }
 
-    ssd1306_printFixed ( 18 , 25 , "Real-time data" , real_style ) ;
-    ssd1306_printFixed ( 18 , 45 , "Heartrate graph" , graph_style ) ;
+    ssd1306_printFixed ( 18 , 16 , "Real-time data" , real_style ) ;
+    ssd1306_printFixed ( 18 , 40 , "Heartrate graph" , graph_style ) ;
   }
 
   if ( select ) {
 
     if ( menu_checker && graph_en ) {
       graph_en = 0 ;
-      ssd1306_printFixed ( 5 , 32 , "Under construction!" , STYLE_BOLD ) ;
+      if ( clear_graph_en ) {
+        clear_graph_en = 0 ;
+        clearDataPoints ( datapoints , NUM_DATAPOINTS ) ;
+        saved_datapoints = 0 ;
+        current_datapoint_pos = 0 ;
+      }
+
+      ssd1306_clearScreen ( ) ;
+      drawDataPoints ( datapoints , saved_datapoints ) ;
     }
 
     if ( !menu_checker ) {
-      temp = get_temperature ( ) ;
-      potval = read_ADC ( Temp_Input ) ;
-      pctg = __map ( (double) potval , 0.0 , 1023.0 , 0.0 , 100.0 ) ;
+      realTimeData ( ) ;
 
-      MSG = "ADC value:   " + String ( potval ) + "   " ;
-      ssd1306_printFixed ( 3 , 18 , MSG.c_str() , STYLE_NORMAL ) ;
+      if ( snapshot_en ) { 
+        snapshot_en = 0 ;
 
-      MSG = "Percentage:  " + String ( pctg ) + "   " ;
-      ssd1306_printFixed ( 3 , 25 , MSG.c_str() , STYLE_NORMAL ) ;
+        if ( saved_datapoints < NUM_DATAPOINTS ) {
+          datapoints [ current_datapoint_pos ] = temp_analog ;
+          current_datapoint_pos++ ;
+          saved_datapoints++ ;
+        }
 
-      MSG = "Temperature: " + String ( temp ) + "  " ;
-      ssd1306_printFixed ( 3 , 32 , MSG.c_str() , STYLE_NORMAL ) ;
-
-      _delay_ms ( freezer ) ;
+        else if ( saved_datapoints >= NUM_DATAPOINTS ) {
+          shiftDataPoints ( datapoints , NUM_DATAPOINTS , temp_analog ) ;
+        }
+      }
     }
   }
 }
