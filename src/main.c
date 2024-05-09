@@ -1,9 +1,9 @@
 /* Title: Semester Project 2 Group 3 - Main Code
  * Institution: University of Southern Denmark (SDU)
  * Campus: Sonderborg
- * File: main.cpp
+ * File: main.c
  * Author: Bence Toth
- * Date: 07/05/2024
+ * Date: 09/05/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) interfaced via I2C
