@@ -43,8 +43,10 @@
 
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
-#define GRAPH_MAX_VERT_POS 0.0F
-#define GRAPH_MIN_VERT_POS 63.0F
+#define BPM_LOWER_LIMIT 30.0F
+#define BPM_UPPER_LIMIT 200.0F
+#define GRAPH_MAX_VERT_POS 9.0F
+#define GRAPH_MIN_VERT_POS 61.0F
 #define NUM_DATAPOINTS 20
 #define MAX_CHARS_PER_NUM 5
 #define ADC_MAX_VAL 1023.0F
@@ -53,24 +55,83 @@
 #define ARMPIT_MAX_TEMP 42.0F
 #define DECIMAL_PRECISION 2
 #define NUM_BASE 10
+#define PRESCALER 1024.0F
+#define PULSE_GATHER_INTERVAL floor ( 1000.0F / ( BPM_LOWER_LIMIT / 60.0F ) )  // Timer1 delay in milliseconds
+#define DELAY_TIME 15.0F               // Timer2 delay in milliseconds
+#define DELAY_MULTIPLIER 11            // Overall delay is (in milliseconds): DELAY_MULTIPLIER * DELAY_TIME
+#define OCR1_VAL (uint16_t) floor ( ( (F_CPU/PRESCALER) * (PULSE_GATHER_INTERVAL/1000.0) ) - 1 )
+#define OCR2_VAL (uint8_t) floor ( ( (F_CPU/PRESCALER) * (DELAY_TIME/1000.0) ) - 1 )
 
-volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 ;
-volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 ;
+typedef enum { MENU , DATA } menu_style_t ;
+volatile menu_style_t menu_selector = MENU ;
+volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , btn_bounce_flag = 1 , timeout_checker = 0 , first_pulse_measured = 0 ;
+volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 , BPM_en = 0 , data_text_en = 0 ;
+volatile uint16_t pulse_duration = 0 ;
+double BPM = 0.0 ;
 double datapoints [ NUM_DATAPOINTS ] ;
 uint8_t current_datapoint_pos = 0 , saved_datapoints = 0 , no_data_flag = 0 ;
 
-void setup_Counter0 ( void ) {
-  TCCR0A = 0x00 ; // Normal mode counter with a TOP value of 0xFF
-   // External Clock Source on pin T0 (PD4) triggered at a Falling edge
-  TCCR0B = ( 1 << CS02 ) | ( 1 << CS01 ) ;
+ISR ( TIMER2_COMPA_vect )  {
+  timeout_checker++ ;
+  if ( timeout_checker == DELAY_MULTIPLIER ) {
+    btn_bounce_flag = 1 ; // Enable button flag
+    timeout_checker = 0 ; // Reset timeout checking
+    TCCR2B = 0x00 ;       // Stop Timer2
+  }
 }
 
-void convertDoubleToStr( double num , char *text ) {
-  dtostrf(num , MAX_CHARS_PER_NUM , DECIMAL_PRECISION , text ) ;
+ISR ( TIMER0_COMPA_vect ) {
+  pulse_duration = TCNT1 ;
+  TCNT1 = 0x0000 ;
+  BPM_en = 1 ;
+  first_pulse_measured = 1 ;
 }
 
-void convertIntToStr ( int num , char *text ) {
-  itoa ( num , text , NUM_BASE ) ;
+void setup_Timers ( void ) {
+  // Timer0 is set up for counting external pulses at a Falling edge
+  // Timer1 is set up for the heartrate measuring interval
+  // Timer2 is set up for button debouncing purposes
+  // Timer2 -> 15 millisecond interval for the button debounce
+  // Calculated using formula: OCRn = (F_CPU/prescaler)*time_seconds - 1
+
+  TCCR0A = ( 1 << WGM01 ) ;  // Counter0 in CTC Mode
+  OCR0A = 2 ;
+  TCCR0B = 0x00 ;            // First, disable Counter0
+  TIMSK0 = ( 1 << OCIE0A ) ;
+
+  TCCR1A = 0x00 ;            // Timer1 in CTC Mode
+  TCCR1B = ( 1 << WGM12 ) ;  // First, disable Timer1
+  OCR1A = OCR1_VAL ;         // Set Timer1 COMPA to precalculated value
+
+  TCCR2A = ( 1 << WGM21 ) ;  // Timer2 in CTC Mode
+  TCCR2B = 0x00 ;            // First, disable Timer2
+  OCR2A = OCR2_VAL ;         // Set Timer2 COMPA to precalculated value
+  TIMSK2 = ( 1 << OCIE2A ) ; // Enable COMPA Interrupt
+}
+
+void start_Pulse_Count ( void ) {
+  //PORTB |= ( 1 << Onboard_LED ) ;
+  PORTB &= ~( 1 << Heart_Enable ) ;  // Turn on Enable pin
+  // External Clock Source on PD4, triggered at a rising edge
+  // Start Counter0 and Timer1 with both prescalers set to 1024
+  TCNT0 = 0x00 ;  // Reset Counter0 value
+  TCNT1 = 0x0000 ;  // Reset Timer1 value
+  TCCR0B = ( 1 << CS02 ) | ( 1 << CS01 ) | ( 1 << CS00 ) ;
+  TCCR1B |= ( 1 << CS12 ) | ( 1 << CS10 ) ;
+}
+
+void stop_Pulse_Count ( void ) {
+  //PORTB &= ~( 1 << Onboard_LED ) ;
+  PORTB |= ( 1 << Heart_Enable ) ;  // Turn off Enable pin
+  TCCR0B = 0x00 ;                                  // Disable Counter0
+  TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
+  pulse_duration = 0 ;
+}
+
+void startTimer2 ( void ) {
+  btn_bounce_flag = 0 ; // Disable button flag
+  // Set prescaler to 1024 and start Timer2
+  TCCR2B = ( 1 << CS22 ) | ( 1 << CS21 ) | ( 1 << CS20 ) ;
 }
 
 uint8_t clearDataPoints ( double *data , uint8_t data_length ) {
@@ -81,15 +142,36 @@ uint8_t clearDataPoints ( double *data , uint8_t data_length ) {
   return 1 ;
 }
 
+void print_Data_Text ( void ) {
+  ssd1306_printFixed ( 3 , 16 , "Pulse [BPM]:" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 3 , 32 , "Armpit  [C]:" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 3 , 48 , "Finger  [C]:" , STYLE_NORMAL ) ;
+}
+
 double convertInterval ( double x , double in_min , double in_max , double out_min , double out_max ) {
   return ( x - in_min ) * ( out_max - out_min ) / ( in_max - in_min ) + out_min ; }
 
-void drawBoundary ( void ) {
-  ssd1306_drawHLine ( 0 , 0 , OLED_WIDTH - 1 ) ; // Top
+void drawOutline ( void ) {
   ssd1306_drawHLine ( 0 , OLED_HEIGHT - 1 , OLED_WIDTH - 1 ) ; // Bottom
+  ssd1306_drawHLine ( 0 , 0 , OLED_WIDTH - 1 ) ; // Top
   ssd1306_drawVLine ( 0 , 0 , OLED_HEIGHT - 1 ) ; // Left
   ssd1306_drawVLine ( OLED_WIDTH - 1 , 0 , OLED_HEIGHT - 1 ) ; // Right
-  ssd1306_printFixed ( 26 , 0 , " Phobiameter " , STYLE_BOLD ) ;
+}
+
+void drawBoundary ( menu_style_t MENU_TYPE ) {
+
+  switch ( MENU_TYPE ) {
+    case MENU :
+      drawOutline ( ) ;
+      ssd1306_printFixed ( 45 , 0 , " Menu " , STYLE_NORMAL ) ;
+      break ;
+    case DATA :
+      drawOutline ( ) ;
+      ssd1306_printFixed ( 45 , 0 , " Data " , STYLE_NORMAL ) ;
+      break ;
+    default :
+      break ;
+  }
 }
 
 void findSmallestAndBiggest ( double *data , double *min , double *max , uint16_t stop_pos ) {
@@ -106,6 +188,8 @@ void findSmallestAndBiggest ( double *data , double *min , double *max , uint16_
 void drawDataPoints ( double *data , uint8_t stop_position ) {
   uint8_t ctr , x1 = 3 , x2 , y1 , y2 , offset ;
   double MIN , MAX ;
+  char NUM_BUFFER [ MAX_CHARS_PER_NUM ] ;
+  
   findSmallestAndBiggest ( datapoints , &MIN , &MAX , saved_datapoints ) ;
 
   offset = (uint8_t) floor ( (double) OLED_WIDTH / stop_position ) ;
@@ -119,6 +203,13 @@ void drawDataPoints ( double *data , uint8_t stop_position ) {
     y1 = y2 ;
     x2 += offset ;
   }
+
+  ssd1306_printFixed ( 0 , 0 , "Min" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 70 , 0 , "Max" , STYLE_NORMAL ) ;
+  dtostrf ( MIN , 4 , 0 , NUM_BUFFER ) ;
+  ssd1306_printFixed ( 24 , 0 , NUM_BUFFER , STYLE_NORMAL ) ;
+  dtostrf ( MAX , 4 , 0 , NUM_BUFFER ) ;
+  ssd1306_printFixed ( 91 , 0 , NUM_BUFFER , STYLE_NORMAL ) ;
 }
 
 void shiftDataPoints ( double *data , uint8_t data_length , double new_data ) {
@@ -144,8 +235,7 @@ void init_Pins ( void ) {
 
 void init_External_Interrupts ( void ) {
   EICRA = ( 1 << ISC11 ) | ( 1 << ISC01 ) ;
-  EIMSK = ( 1 << INT1 ) | ( 1 << INT0 ) ;
-  sei ( ) ;       // Enable global interrupts 
+  EIMSK = ( 1 << INT1 ) | ( 1 << INT0 ) ; 
   // Trigger an interrupt at a falling edge at both INT0 and INT1
 }
 
@@ -162,92 +252,128 @@ uint16_t read_ADC ( const uint8_t channel ) {
   return ( ( uint16_t ) ADCL + ( ( uint16_t ) ADCH << 8 ) ) ;  // Bit-shift High nibble to get the result of the conversion
 }
 
-void realTimeData ( double *finger_temp , double *armpit_temp ) {
+void realTimeData ( ) {
   uint16_t potval ;
-  char NUM_BUFFER [ MAX_CHARS_PER_NUM ] ;
+  char NUM_BUFFER [ MAX_CHARS_PER_NUM ] , BPM_BUF [ 4 ] ;
   double temp_analog , temp_digital ;
+
+  if ( data_text_en ) {
+    data_text_en = 0 ;
+    print_Data_Text ( ) ;
+  }
   
   temp_digital = get_temperature ( ) ;
   potval = read_ADC ( Temp_Input ) ;
   temp_analog = convertInterval ( (double) potval , ADC_MIN_VAL , ADC_MAX_VAL , ARMPIT_MIN_TEMP , ARMPIT_MAX_TEMP ) ;
 
-  convertDoubleToStr ( temp_analog , NUM_BUFFER ) ;
-  ssd1306_printFixed ( 90 , 24 , NUM_BUFFER , STYLE_NORMAL ) ;
+  dtostrf ( temp_analog , MAX_CHARS_PER_NUM , DECIMAL_PRECISION , NUM_BUFFER ) ;
+  ssd1306_printFixed ( 90 , 32 , NUM_BUFFER , STYLE_NORMAL ) ;
 
-  convertDoubleToStr ( temp_digital , NUM_BUFFER ) ;
-  ssd1306_printFixed ( 90 , 40 , NUM_BUFFER , STYLE_NORMAL ) ;
+  dtostrf ( temp_digital , MAX_CHARS_PER_NUM , DECIMAL_PRECISION , NUM_BUFFER ) ;
+  ssd1306_printFixed ( 90 , 48 , NUM_BUFFER , STYLE_NORMAL ) ;
 
-  ssd1306_printFixed ( 3 , 24 , "Armpit t.: " , STYLE_NORMAL ) ;
-  ssd1306_printFixed ( 3 , 40 , "Finger t.: " , STYLE_NORMAL ) ;
+  if ( BPM_en ) {
+    BPM_en = 0 ;
+    BPM = 60.0 / convertInterval ( (double) pulse_duration , 0.0 , (double) OCR1_VAL , 0.0 , PULSE_GATHER_INTERVAL / 1000.0 ) ;
 
-  * finger_temp = temp_digital ;
-  * armpit_temp = temp_analog ;
+    if ( BPM <= BPM_UPPER_LIMIT && BPM >= BPM_LOWER_LIMIT ) {
+      dtostrf ( BPM , 4 , 0 , BPM_BUF ) ;
+      ssd1306_printFixed ( 80 , 16 , BPM_BUF , STYLE_NORMAL ) ;
+    }
+  }
 }
 
 ISR ( INT0_vect ) {
-  switch ( select ) {
-    case 0 :
-      menu_checker = !menu_checker ;
-      switched = 0 ;
-      break ;
-    case 1 :
-      switch ( menu_checker ) {
-        case 0 :
-          snapshot_en = 1 ;
-          break ;
-        case 1:
-          clear_graph_en = 1 ;
-          graph_en = 1 ;
-          break ;
-        default :
-          break ;
-      }
-      break ;
-    default :
-      break ;
+  if ( btn_bounce_flag ) {
+
+    startTimer2 ( ) ;
+
+    switch ( select ) {
+      case 0 :
+        menu_checker = !menu_checker ;
+        switched = 0 ;
+        break ;
+      case 1 :
+        switch ( menu_checker ) {
+          case 0 :
+            snapshot_en = 1 ;
+            break ;
+          case 1:
+            clear_graph_en = 1 ;
+            graph_en = 1 ;
+            break ;
+          default :
+            break ;
+        }
+        break ;
+      default :
+        break ;
+    }
   }
 }
 
 ISR ( INT1_vect ) {
-  select = !select ;
-  clear_en = 1 ;
-  switch ( select ) {
-    case 0 :
-      switched = 0 ;
-      break ;
-    case 1 :
-      graph_en = 1 ;
-      break ;
-    default :
-      break ;
+  if ( btn_bounce_flag ) {
+
+    startTimer2 ( ) ;
+
+    select = !select ;
+    clear_en = 1 ;
+    switch ( select ) {
+      case 0 :
+        switched = 0 ;
+        first_pulse_measured = 0 ;
+        stop_Pulse_Count ( ) ;
+        menu_selector = MENU ;
+        break ;
+      case 1 :
+        switch ( menu_checker ) {
+          case 0 :
+            menu_selector = DATA ;
+            data_text_en = 1 ;
+            start_Pulse_Count ( ) ;
+            break ;
+          case 1 :
+            graph_en = 1 ;
+            break ;
+          default :
+            break ;
+        }
+        break ;
+      default :
+        break ;
+    }
   }
 }
 
 int main ( void ) {
 
   EFontStyle real_style , graph_style ;
-  double temp_armpit , temp_fingertip ;
 
   init_Pins ( ) ; 
   init_External_Interrupts ( ) ;
+  setup_Timers ( ) ;
+  stop_Pulse_Count ( ) ;
   init_ADC ( ) ;
-  i2c_init ( ) ;
-  lm75_init ( ) ;
-
-  no_data_flag = clearDataPoints ( datapoints , NUM_DATAPOINTS ) ;
+  sei ( ) ;       // Enable global interrupts
 
   ssd1306_128x64_i2c_init ( ) ;
   ssd1306_clearScreen ( ) ;
   ssd1306_positiveMode ( ) ;
   ssd1306_setFixedFont ( ssd1306xled_font6x8 ) ;
-  drawBoundary ( ) ;
+  drawBoundary ( MENU ) ;
+
+  i2c_init ( ) ;
+  lm75_init ( ) ;
+
+  no_data_flag = clearDataPoints ( datapoints , NUM_DATAPOINTS ) ;
 
   while ( 1 ) {
 
     if ( clear_en ) {
       clear_en = 0 ;
       ssd1306_clearScreen ( ) ;
-      drawBoundary ( ) ;
+      drawBoundary ( menu_selector ) ;
     }
 
     switch ( select ) {
@@ -259,17 +385,17 @@ int main ( void ) {
           switch ( menu_checker ) {
             case 0 :
               real_style = STYLE_BOLD ;
-              graph_style = STYLE_NORMAL ;
+              graph_style = STYLE_ITALIC ;
               break ;
             case 1 :
-              real_style = STYLE_NORMAL ;
+              real_style = STYLE_ITALIC ;
               graph_style = STYLE_BOLD ;
               break ;
             default :
               break ;
           }
           ssd1306_printFixed ( 18 , 24 , "Real-time data" , real_style ) ;
-          ssd1306_printFixed ( 18 , 40 , "Heartrate graph" , graph_style ) ;
+          ssd1306_printFixed ( 13 , 40 , "Pulse graph [BPM]" , graph_style ) ;
         }
         break ;
 
@@ -279,18 +405,18 @@ int main ( void ) {
 
           case 0 :
 
-            realTimeData ( &temp_fingertip , &temp_armpit ) ;
+            realTimeData ( ) ;
 
-            if ( snapshot_en ) { 
+            if ( snapshot_en && first_pulse_measured ) { 
               snapshot_en = 0 ;
               no_data_flag = 0 ;
               if ( saved_datapoints < NUM_DATAPOINTS ) {
-                datapoints [ current_datapoint_pos ] = temp_armpit ;
+                datapoints [ current_datapoint_pos ] = BPM ;
                 current_datapoint_pos++ ;
                 saved_datapoints++ ;
               }
 
-              else shiftDataPoints ( datapoints , NUM_DATAPOINTS , temp_armpit ) ;
+              else shiftDataPoints ( datapoints , NUM_DATAPOINTS , BPM ) ;
             }
             break ;
 
