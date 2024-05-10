@@ -3,7 +3,7 @@
  * Campus: Sonderborg
  * File: main.c
  * Author: Bence Toth
- * Date: 09/05/2024
+ * Date: 10/05/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) interfaced via I2C
@@ -58,14 +58,14 @@
 #define PRESCALER 1024.0F
 #define PULSE_GATHER_INTERVAL floor ( 1000.0F / ( BPM_LOWER_LIMIT / 60.0F ) )  // Timer1 delay in milliseconds
 #define DELAY_TIME 15.0F               // Timer2 delay in milliseconds
-#define DELAY_MULTIPLIER 11            // Overall delay is (in milliseconds): DELAY_MULTIPLIER * DELAY_TIME
+#define DELAY_MULTIPLIER 14            // Overall delay is (in milliseconds): DELAY_MULTIPLIER * DELAY_TIME
 #define OCR1_VAL (uint16_t) floor ( ( (F_CPU/PRESCALER) * (PULSE_GATHER_INTERVAL/1000.0) ) - 1 )
 #define OCR2_VAL (uint8_t) floor ( ( (F_CPU/PRESCALER) * (DELAY_TIME/1000.0) ) - 1 )
 
 typedef enum { MENU , DATA } menu_style_t ;
 volatile menu_style_t menu_selector = MENU ;
 volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , btn_bounce_flag = 1 , timeout_checker = 0 , first_pulse_measured = 0 ;
-volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 , BPM_en = 0 , data_text_en = 0 ;
+volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 , BPM_en = 0 ;
 volatile uint16_t pulse_duration = 0 ;
 double BPM = 0.0 ;
 double datapoints [ NUM_DATAPOINTS ] ;
@@ -142,12 +142,6 @@ uint8_t clearDataPoints ( double *data , uint8_t data_length ) {
   return 1 ;
 }
 
-void print_Data_Text ( void ) {
-  ssd1306_printFixed ( 3 , 16 , "Pulse [BPM]:" , STYLE_NORMAL ) ;
-  ssd1306_printFixed ( 3 , 32 , "Armpit  [C]:" , STYLE_NORMAL ) ;
-  ssd1306_printFixed ( 3 , 48 , "Finger  [C]:" , STYLE_NORMAL ) ;
-}
-
 double convertInterval ( double x , double in_min , double in_max , double out_min , double out_max ) {
   return ( x - in_min ) * ( out_max - out_min ) / ( in_max - in_min ) + out_min ; }
 
@@ -159,14 +153,12 @@ void drawOutline ( void ) {
 }
 
 void drawBoundary ( menu_style_t MENU_TYPE ) {
-
+  drawOutline ( ) ;
   switch ( MENU_TYPE ) {
     case MENU :
-      drawOutline ( ) ;
       ssd1306_printFixed ( 45 , 0 , " Menu " , STYLE_NORMAL ) ;
       break ;
     case DATA :
-      drawOutline ( ) ;
       ssd1306_printFixed ( 45 , 0 , " Data " , STYLE_NORMAL ) ;
       break ;
     default :
@@ -186,6 +178,12 @@ void findSmallestAndBiggest ( double *data , double *min , double *max , uint16_
 }
 
 void drawDataPoints ( double *data , uint8_t stop_position ) {
+  if ( stop_position == 1 ) {
+    ssd1306_printFixed ( 2 , 0 , "Minimum 2 datapoints" , STYLE_NORMAL ) ;
+    ssd1306_printFixed ( 10 , 8 , "have to be given!" , STYLE_NORMAL ) ;
+    return ;
+  }
+
   uint8_t ctr , x1 = 3 , x2 , y1 , y2 , offset ;
   double MIN , MAX ;
   char NUM_BUFFER [ MAX_CHARS_PER_NUM ] ;
@@ -256,15 +254,14 @@ void realTimeData ( ) {
   uint16_t potval ;
   char NUM_BUFFER [ MAX_CHARS_PER_NUM ] , BPM_BUF [ 4 ] ;
   double temp_analog , temp_digital ;
-
-  if ( data_text_en ) {
-    data_text_en = 0 ;
-    print_Data_Text ( ) ;
-  }
   
   temp_digital = get_temperature ( ) ;
   potval = read_ADC ( Temp_Input ) ;
   temp_analog = convertInterval ( (double) potval , ADC_MIN_VAL , ADC_MAX_VAL , ARMPIT_MIN_TEMP , ARMPIT_MAX_TEMP ) ;
+
+  ssd1306_printFixed ( 3 , 16 , "Pulse [BPM]:" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 3 , 32 , "Armpit  [C]:" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 3 , 48 , "Finger  [C]:" , STYLE_NORMAL ) ;
 
   dtostrf ( temp_analog , MAX_CHARS_PER_NUM , DECIMAL_PRECISION , NUM_BUFFER ) ;
   ssd1306_printFixed ( 90 , 32 , NUM_BUFFER , STYLE_NORMAL ) ;
@@ -298,9 +295,9 @@ ISR ( INT0_vect ) {
           case 0 :
             snapshot_en = 1 ;
             break ;
-          case 1:
-            clear_graph_en = 1 ;
+          case 1 :
             graph_en = 1 ;
+            clear_graph_en = 1 ;
             break ;
           default :
             break ;
@@ -319,18 +316,20 @@ ISR ( INT1_vect ) {
 
     select = !select ;
     clear_en = 1 ;
+
     switch ( select ) {
       case 0 :
         switched = 0 ;
-        first_pulse_measured = 0 ;
-        stop_Pulse_Count ( ) ;
+        if ( !menu_checker ) {
+          first_pulse_measured = 0 ;
+          stop_Pulse_Count ( ) ;
+        }
         menu_selector = MENU ;
         break ;
       case 1 :
         switch ( menu_checker ) {
           case 0 :
             menu_selector = DATA ;
-            data_text_en = 1 ;
             start_Pulse_Count ( ) ;
             break ;
           case 1 :
@@ -373,7 +372,7 @@ int main ( void ) {
     if ( clear_en ) {
       clear_en = 0 ;
       ssd1306_clearScreen ( ) ;
-      drawBoundary ( menu_selector ) ;
+      if ( !switched || !menu_checker ) { drawBoundary ( menu_selector ) ; }
     }
 
     switch ( select ) {
@@ -439,8 +438,7 @@ int main ( void ) {
                   drawDataPoints ( datapoints , saved_datapoints ) ;
                   break ;
                 case 1 :
-                  ssd1306_printFixed ( 21 , 24 , "GRAPH CLEARED" , STYLE_BOLD ) ;
-                  ssd1306_printFixed ( 7 , 40 , "NO DATA TO DISPLAY" , STYLE_BOLD ) ;
+                  ssd1306_printFixed ( 8 , 32 , "NO DATA TO DISPLAY" , STYLE_BOLD ) ;
                   break ;
                 default :
                   break ;
