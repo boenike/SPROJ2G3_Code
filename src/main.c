@@ -26,9 +26,14 @@
 #include "lm75.h"
 
 #ifndef F_CPU
-#warning "CPU clock was not defined!"
+#warning "CPU clock was not defined! Set to 16 MHz"
 #define F_CPU 16000000UL
-// 16 MHz -> Only define outside of PlatformIO
+// Clock frequency of ATmega328P is 16 MHz -> Only define outside of PlatformIO
+#endif
+
+#ifdef ARDUINO
+#undef ARDUINO
+#warning "Arduino was defined, that is haram!"
 #endif
 
 #define Onboard_LED PB5
@@ -43,11 +48,16 @@
 
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 64
+#define START_POS_X 5
+#define MENU_GRAPH_Y 40
+#define MENU_DATA_Y 24
+#define CHAR_WIDTH 6
 #define BPM_LOWER_LIMIT 30.0F
 #define BPM_UPPER_LIMIT 200.0F
 #define GRAPH_MAX_VERT_POS 9.0F
 #define GRAPH_MIN_VERT_POS 61.0F
 #define NUM_DATAPOINTS 20
+#define MIN_DATAPOINTS 2
 #define MAX_CHARS_PER_NUM 5
 #define ADC_MAX_VAL 1023.0F
 #define ADC_MIN_VAL 0.0F
@@ -58,17 +68,18 @@
 #define PRESCALER 1024.0F
 #define PULSE_GATHER_INTERVAL floor ( 1000.0F / ( BPM_LOWER_LIMIT / 60.0F ) )  // Timer1 delay in milliseconds
 #define DELAY_TIME 15.0F               // Timer2 delay in milliseconds
-#define DELAY_MULTIPLIER 14            // Overall delay is (in milliseconds): DELAY_MULTIPLIER * DELAY_TIME
-#define OCR1_VAL (uint16_t) floor ( ( (F_CPU/PRESCALER) * (PULSE_GATHER_INTERVAL/1000.0) ) - 1 )
-#define OCR2_VAL (uint8_t) floor ( ( (F_CPU/PRESCALER) * (DELAY_TIME/1000.0) ) - 1 )
+#define DELAY_MULTIPLIER 13            // Overall delay is (in milliseconds): DELAY_MULTIPLIER * DELAY_TIME
+#define OCR1_VAL (uint16_t) floor ( ( (F_CPU/PRESCALER) * ( PULSE_GATHER_INTERVAL / 1000.0 ) ) - 1 )
+#define OCR2_VAL (uint8_t)  floor ( ( (F_CPU/PRESCALER) * ( DELAY_TIME / 1000.0 ) ) - 1 )
 
 typedef enum { MENU , DATA } menu_style_t ;
 volatile menu_style_t menu_selector = MENU ;
 volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , btn_bounce_flag = 1 , timeout_checker = 0 , first_pulse_measured = 0 ;
-volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 , BPM_en = 0 ;
+volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 , BPM_en = 0 , interval_check = 0 ;
 volatile uint16_t pulse_duration = 0 ;
-double BPM = 0.0 ;
+double BPM = 0.0 , displayed_BPM = 0.0 ;
 double datapoints [ NUM_DATAPOINTS ] ;
+const char indicator [ ] = "->" ;
 uint8_t current_datapoint_pos = 0 , saved_datapoints = 0 , no_data_flag = 0 ;
 
 ISR ( TIMER2_COMPA_vect )  {
@@ -80,11 +91,32 @@ ISR ( TIMER2_COMPA_vect )  {
   }
 }
 
-ISR ( TIMER0_COMPA_vect ) {
-  pulse_duration = TCNT1 ;
+ISR ( TIMER1_COMPA_vect ) {
+  TCNT0 = 0x00 ;        // Reset interval after an overflow
+  interval_check = 0 ; 
   TCNT1 = 0x0000 ;
-  BPM_en = 1 ;
-  first_pulse_measured = 1 ;
+  TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
+}
+
+ISR ( TIMER0_COMPA_vect ) {
+  interval_check++ ;
+  switch ( interval_check ) {
+    case 1 :
+      // Start Timer1 with prescaler set to 1024
+      TCNT1 = 0x0000 ;        // Reset Timer1 value
+      TCCR1B |= ( 1 << CS12 ) | ( 1 << CS10 ) ;
+      break ;
+    case 2 :
+      pulse_duration = TCNT1 ;
+      interval_check = 0 ;
+      TCNT1 = 0x0000 ;
+      TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
+      BPM_en = 1 ;
+      first_pulse_measured = 1 ;
+      break ;
+    default :
+      break ;
+  }
 }
 
 void setup_Timers ( void ) {
@@ -95,7 +127,7 @@ void setup_Timers ( void ) {
   // Calculated using formula: OCRn = (F_CPU/prescaler)*time_seconds - 1
 
   TCCR0A = ( 1 << WGM01 ) ;  // Counter0 in CTC Mode
-  OCR0A = 2 ;
+  OCR0A = 1 ;                // Detect one pulse
   TCCR0B = 0x00 ;            // First, disable Counter0
   TIMSK0 = ( 1 << OCIE0A ) ;
 
@@ -107,37 +139,25 @@ void setup_Timers ( void ) {
   TCCR2B = 0x00 ;            // First, disable Timer2
   OCR2A = OCR2_VAL ;         // Set Timer2 COMPA to precalculated value
   TIMSK2 = ( 1 << OCIE2A ) ; // Enable COMPA Interrupt
-}
 
-void start_Pulse_Count ( void ) {
-  //PORTB |= ( 1 << Onboard_LED ) ;
-  PORTB &= ~( 1 << Heart_Enable ) ;  // Turn on Enable pin
-  // External Clock Source on PD4, triggered at a rising edge
-  // Start Counter0 and Timer1 with both prescalers set to 1024
-  TCNT0 = 0x00 ;  // Reset Counter0 value
-  TCNT1 = 0x0000 ;  // Reset Timer1 value
-  TCCR0B = ( 1 << CS02 ) | ( 1 << CS01 ) | ( 1 << CS00 ) ;
-  TCCR1B |= ( 1 << CS12 ) | ( 1 << CS10 ) ;
-}
-
-void stop_Pulse_Count ( void ) {
-  //PORTB &= ~( 1 << Onboard_LED ) ;
+  // At first, stop pulse count
   PORTB |= ( 1 << Heart_Enable ) ;  // Turn off Enable pin
-  TCCR0B = 0x00 ;                                  // Disable Counter0
-  TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
   pulse_duration = 0 ;
 }
 
-void startTimer2 ( void ) {
-  btn_bounce_flag = 0 ; // Disable button flag
-  // Set prescaler to 1024 and start Timer2
-  TCCR2B = ( 1 << CS22 ) | ( 1 << CS21 ) | ( 1 << CS20 ) ;
-}
-
-uint8_t clearDataPoints ( double *data , uint8_t data_length ) {
+uint8_t clearDataPoints ( double data [ ] , uint8_t data_length ) {
   uint8_t ctr ;
   for ( ctr = 0 ; ctr < data_length ; ctr++ ) {
     data [ ctr ] = 0.0 ;
+  }
+  return 1 ;
+}
+
+uint8_t allDatapointsEqual ( double data [ ] , uint8_t stop_point ) {
+  uint8_t ctr ;
+  double reference = data [ 0 ] ;
+  for ( ctr = 1 ; ctr < stop_point ; ctr++ ) {
+    if ( data [ ctr ] != reference ) return 0 ;
   }
   return 1 ;
 }
@@ -166,7 +186,7 @@ void drawBoundary ( menu_style_t MENU_TYPE ) {
   }
 }
 
-void findSmallestAndBiggest ( double *data , double *min , double *max , uint16_t stop_pos ) {
+void findSmallestAndBiggest ( double data [ ] , double *min , double *max , uint16_t stop_pos ) {
   uint8_t ctr ;
   double smallest = data [ 0 ] , biggest = data [ 0 ] ;
   for ( ctr = 0 ; ctr < stop_pos ; ctr++ ) {
@@ -177,11 +197,28 @@ void findSmallestAndBiggest ( double *data , double *min , double *max , uint16_
   * max = biggest ;
 }
 
-void drawDataPoints ( double *data , uint8_t stop_position ) {
-  if ( stop_position == 1 ) {
-    ssd1306_printFixed ( 2 , 0 , "Minimum 2 datapoints" , STYLE_NORMAL ) ;
-    ssd1306_printFixed ( 10 , 8 , "have to be given!" , STYLE_NORMAL ) ;
+void drawDataPoints ( double data [ ] , uint8_t stop_position ) {
+  uint8_t halver ;
+
+  if ( stop_position <= MIN_DATAPOINTS ) {
+    char MIN_DATAPOINTS_BUF [ 2 ] ;
+    itoa ( MIN_DATAPOINTS , MIN_DATAPOINTS_BUF , NUM_BASE ) ;
+    ssd1306_printFixed ( 2 , 8 , "Minimum of" , STYLE_NORMAL ) ;
+    ssd1306_printFixed ( 10 , 16 , MIN_DATAPOINTS_BUF , STYLE_BOLD ) ;
+    ssd1306_printFixed ( 25 , 16 , "datapoints" , STYLE_NORMAL ) ;
+    ssd1306_printFixed ( 15 , 24 , "have to be given!" , STYLE_NORMAL ) ;
     return ;
+  }
+
+  switch ( allDatapointsEqual ( data , stop_position ) ) {
+    case 0 :
+      halver = 0 ;
+      break ;
+    case 1 :
+      halver = 30 ;
+      break ;
+    default :
+      break ;
   }
 
   uint8_t ctr , x1 = 3 , x2 , y1 , y2 , offset ;
@@ -192,25 +229,25 @@ void drawDataPoints ( double *data , uint8_t stop_position ) {
 
   offset = (uint8_t) floor ( (double) OLED_WIDTH / stop_position ) ;
   x2 = offset ;
-  y1 = (uint8_t) convertInterval ( data [ 0 ] , MIN , MAX , GRAPH_MIN_VERT_POS , GRAPH_MAX_VERT_POS ) ;
+  y1 = (uint8_t) convertInterval ( data [ 0 ] , MIN , MAX , GRAPH_MIN_VERT_POS , GRAPH_MAX_VERT_POS ) - halver ;
 
   for ( ctr = 0 ; ctr < stop_position ; ctr++ ) {
-    y2 = (uint8_t) convertInterval ( data [ ctr ] , MIN , MAX , GRAPH_MIN_VERT_POS , GRAPH_MAX_VERT_POS ) ;
+    y2 = (uint8_t) convertInterval ( data [ ctr ] , MIN , MAX , GRAPH_MIN_VERT_POS , GRAPH_MAX_VERT_POS ) - halver ;
     ssd1306_drawLine ( x1 , y1 , x2 , y2 ) ;
     x1 = x2 ;
     y1 = y2 ;
     x2 += offset ;
   }
 
-  ssd1306_printFixed ( 0 , 0 , "Min" , STYLE_NORMAL ) ;
-  ssd1306_printFixed ( 70 , 0 , "Max" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 0 , 0 , "[BPM]Min " , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 84 , 0 , "Max" , STYLE_NORMAL ) ;
   dtostrf ( MIN , 4 , 0 , NUM_BUFFER ) ;
-  ssd1306_printFixed ( 24 , 0 , NUM_BUFFER , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 8 * CHAR_WIDTH , 0 , NUM_BUFFER , STYLE_NORMAL ) ;
   dtostrf ( MAX , 4 , 0 , NUM_BUFFER ) ;
-  ssd1306_printFixed ( 91 , 0 , NUM_BUFFER , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 17 * CHAR_WIDTH , 0 , NUM_BUFFER , STYLE_NORMAL ) ;
 }
 
-void shiftDataPoints ( double *data , uint8_t data_length , double new_data ) {
+void shiftDataPoints ( double data [ ] , uint8_t data_length , double new_data ) {
   uint8_t ctr ;
   for ( ctr = 0 ; ctr < ( data_length - 1 ) ; ctr++ ) {
     data [ ctr ] = data [ ctr + 1 ] ;
@@ -271,19 +308,23 @@ void realTimeData ( ) {
 
   if ( BPM_en ) {
     BPM_en = 0 ;
-    BPM = 60.0 / convertInterval ( (double) pulse_duration , 0.0 , (double) OCR1_VAL , 0.0 , PULSE_GATHER_INTERVAL / 1000.0 ) ;
+    BPM = 120.0 / convertInterval ( (double) pulse_duration , 0.0 , (double) OCR1_VAL , 0.0 , PULSE_GATHER_INTERVAL / 1000.0 ) ;
 
     if ( BPM <= BPM_UPPER_LIMIT && BPM >= BPM_LOWER_LIMIT ) {
-      dtostrf ( BPM , 4 , 0 , BPM_BUF ) ;
+      displayed_BPM = BPM ;
+      dtostrf ( displayed_BPM , 4 , 0 , BPM_BUF ) ;
       ssd1306_printFixed ( 80 , 16 , BPM_BUF , STYLE_NORMAL ) ;
     }
   }
 }
 
 ISR ( INT0_vect ) {
+
   if ( btn_bounce_flag ) {
 
-    startTimer2 ( ) ;
+    btn_bounce_flag = 0 ; // Disable button flag
+    // Set prescaler to 1024 and start Timer2
+    TCCR2B = ( 1 << CS22 ) | ( 1 << CS21 ) | ( 1 << CS20 ) ;
 
     switch ( select ) {
       case 0 :
@@ -310,27 +351,39 @@ ISR ( INT0_vect ) {
 }
 
 ISR ( INT1_vect ) {
+
   if ( btn_bounce_flag ) {
 
-    startTimer2 ( ) ;
+    btn_bounce_flag = 0 ; // Disable button flag
+    // Set prescaler to 1024 and start Timer2
+    TCCR2B = ( 1 << CS22 ) | ( 1 << CS21 ) | ( 1 << CS20 ) ;
 
     select = !select ;
     clear_en = 1 ;
 
     switch ( select ) {
+
       case 0 :
         switched = 0 ;
-        if ( !menu_checker ) {
-          first_pulse_measured = 0 ;
-          stop_Pulse_Count ( ) ;
-        }
+        first_pulse_measured = 0 ;
+        // Stop pulse count
+        PORTB |= ( 1 << Heart_Enable ) ;           // Turn off Enable pin
+        TCCR0B = 0x00 ;                            // Disable Counter0
+        pulse_duration = 0 ;
         menu_selector = MENU ;
         break ;
+
       case 1 :
+
         switch ( menu_checker ) {
           case 0 :
             menu_selector = DATA ;
-            start_Pulse_Count ( ) ;
+            // Start pulse count
+            PORTB &= ~( 1 << Heart_Enable ) ;  // Turn on Enable pin
+            // External Clock Source on PD4, triggered at a rising edge
+            // Start Counter0 with prescalers set to 1024
+            TCNT0 = 0x00 ;    // Reset Counter0 value
+            TCCR0B = ( 1 << CS02 ) | ( 1 << CS01 ) | ( 1 << CS00 ) ;
             break ;
           case 1 :
             graph_en = 1 ;
@@ -339,6 +392,7 @@ ISR ( INT1_vect ) {
             break ;
         }
         break ;
+
       default :
         break ;
     }
@@ -348,13 +402,13 @@ ISR ( INT1_vect ) {
 int main ( void ) {
 
   EFontStyle real_style , graph_style ;
+  uint8_t menu_data_x , menu_graph_x , indicator_pos_y ;
 
   init_Pins ( ) ; 
   init_External_Interrupts ( ) ;
   setup_Timers ( ) ;
-  stop_Pulse_Count ( ) ;
   init_ADC ( ) ;
-  sei ( ) ;       // Enable global interrupts
+  sei ( ) ;   // Enable global interrupts
 
   ssd1306_128x64_i2c_init ( ) ;
   ssd1306_clearScreen ( ) ;
@@ -385,16 +439,23 @@ int main ( void ) {
             case 0 :
               real_style = STYLE_BOLD ;
               graph_style = STYLE_ITALIC ;
+              indicator_pos_y = MENU_DATA_Y ;
+              menu_data_x = START_POS_X + CHAR_WIDTH * sizeof ( indicator - 1 ) ;
+              menu_graph_x = START_POS_X ;
               break ;
             case 1 :
               real_style = STYLE_ITALIC ;
               graph_style = STYLE_BOLD ;
+              indicator_pos_y = MENU_GRAPH_Y ;
+              menu_graph_x = START_POS_X + CHAR_WIDTH * sizeof ( indicator - 1 ) ;
+              menu_data_x = START_POS_X ;
               break ;
             default :
               break ;
           }
-          ssd1306_printFixed ( 18 , 24 , "Real-time data" , real_style ) ;
-          ssd1306_printFixed ( 13 , 40 , "Pulse graph [BPM]" , graph_style ) ;
+          ssd1306_printFixed ( START_POS_X , indicator_pos_y , indicator , STYLE_NORMAL ) ;
+          ssd1306_printFixed ( menu_data_x , MENU_DATA_Y , " Real-time data  " , real_style ) ;
+          ssd1306_printFixed ( menu_graph_x , MENU_GRAPH_Y , " Pulse graph  " , graph_style ) ;
         }
         break ;
 
@@ -410,12 +471,12 @@ int main ( void ) {
               snapshot_en = 0 ;
               no_data_flag = 0 ;
               if ( saved_datapoints < NUM_DATAPOINTS ) {
-                datapoints [ current_datapoint_pos ] = BPM ;
+                datapoints [ current_datapoint_pos ] = displayed_BPM ;
                 current_datapoint_pos++ ;
                 saved_datapoints++ ;
               }
 
-              else shiftDataPoints ( datapoints , NUM_DATAPOINTS , BPM ) ;
+              else shiftDataPoints ( datapoints , NUM_DATAPOINTS , displayed_BPM ) ;
             }
             break ;
 
