@@ -1,23 +1,28 @@
+#include <stdint.h>
 #include "i2cmaster.h"
 #include "lm75.h"
 
-void lm75_init ( )
+//void lm75_init ( )
+uint8_t lm75_init ( )
 {
+	uint8_t status ;
 	// Set sensor configuration
-	i2c_start_wait(LM75_ADR + I2C_WRITE);
+	//i2c_start_wait(LM75_ADR + I2C_WRITE);
+	status = i2c_start(LM75_ADR + I2C_WRITE);
+	if ( status ) return 0 ; // Failed to access device
 	// In the pointer register, request to write the configuration register
 	i2c_write(0x01); 
 	// Write the configuration register to normal mode and default params
 	i2c_write(0x00);
 	i2c_stop();
+	return 1 ;	// Device successfully accessed
 }
 
 double get_temperature ( ) {
 	
-	float temperature; // will hold the measured ambient temperature in deg. Celsius
+	double temperature; // will hold the measured ambient temperature in deg. Celsius
 	unsigned int temp_data; // intermediate value
-	unsigned char low_temp_byte;
-	unsigned char high_temp_byte;
+	uint8_t low_temp_byte , high_temp_byte ;
 
 	// In the pointer register, request to read from Temp register
 	i2c_start_wait(LM75_ADR + I2C_WRITE);
@@ -29,6 +34,7 @@ double get_temperature ( ) {
 	// Low byte:  | D02 | D01 | D00 | xxx | xxx | xxx | xxx | xxx |
 	// where D10 is the sign bit and D09..D00 is the value of the temp * 0.125
 	// if temp is negative, then temp is stored as 2's complement
+
 	i2c_rep_start(LM75_ADR + I2C_READ);
 	high_temp_byte = i2c_readAck();
 	low_temp_byte = i2c_readNak();
@@ -44,5 +50,5 @@ double get_temperature ( ) {
 		temperature = 0.00 - temp_data;
 		
 	}
-	return temperature;
+	return temperature ;
 }
