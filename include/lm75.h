@@ -3,13 +3,15 @@
 #endif
 #ifndef LM75_H_INCLUDED
 #define LM75_H_INCLUDED
+#include <stdint.h>
 
-//LM75 address (a2 = a1 = a0 = 0)
+// LM75 I2C address: (A2 = A1 = A0 = GND = 0V)
 #define LM75_ADR 0x90
 
-//function headers
+// Function headers
 double get_temperature(void);
-void lm75_init(void);
+//void lm75_init(void);
+uint8_t lm75_init(void);
 
 #endif
 #ifdef __cplusplus
