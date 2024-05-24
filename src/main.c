@@ -3,7 +3,7 @@
  * Campus: Sonderborg
  * File: main.c
  * Author: Bence Toth
- * Date: 21/05/2024
+ * Date: 22/05/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) interfaced via I2C
@@ -25,18 +25,9 @@
 #include "i2cmaster.h"
 #include "lm75.h"
 
-#ifndef F_CPU
-#warning "CPU clock was not defined! Set to 16 MHz"
-#define F_CPU 16000000UL
-// Clock frequency of ATmega328P is 16 MHz -> Only define outside of PlatformIO
-#endif
-
 #ifdef ARDUINO
 #undef ARDUINO
 #endif
-
-#define Onboard_LED PB5
-#define Heart_Enable PB1
 
 #define Temp_Input PC1
 #define Bat_Input PC2
@@ -51,8 +42,6 @@
 #define START_POS_X 5
 #define MENU_GRAPH_Y 32
 #define MENU_DATA_Y 16
-#define MENU_BAT_X 5
-#define MENU_BAT_Y 48
 
 #define CHAR_WIDTH 6
 #define CHAR_LENGTH 8
@@ -79,25 +68,27 @@
 
 #define DECIMAL_PRECISION 2
 #define NUM_BASE 10
-#define MAX_SAMPLES 4
+#define MAX_BPM_SAMPLES 5
+#define MAX_TEMP_SAMPLES 100
 
 #define PRESCALER 1024.0F
 #define PULSE_GATHER_INTERVAL floor ( 1000.0F / ( BPM_LOWER_LIMIT / 60.0F ) )  // Timer1 delay in milliseconds
 #define DELAY_TIME 15.0F               // Timer2 delay in milliseconds
 #define DELAY_MULTIPLIER 13            // Overall delay is (in milliseconds): DELAY_MULTIPLIER * DELAY_TIME
-#define OCR1_VAL (uint16_t) floor ( ( (F_CPU/PRESCALER) * ( PULSE_GATHER_INTERVAL / 1000.0 ) ) - 1 )
-#define OCR2_VAL (uint8_t)  floor ( ( (F_CPU/PRESCALER) * ( DELAY_TIME / 1000.0 ) ) - 1 )
+#define OCR1_VAL (uint16_t) floor ( ( (F_CPU / PRESCALER) * ( PULSE_GATHER_INTERVAL / 1000.0 ) ) - 1 )
+#define OCR2_VAL (uint8_t)  floor ( ( (F_CPU / PRESCALER) * ( DELAY_TIME / 1000.0 ) ) - 1 )
 
 typedef enum { MENU , DATA } menu_style_t ;
+typedef enum { PULSE , TEMP } graph_display_t ;
 volatile menu_style_t menu_selector = MENU ;
 volatile uint8_t menu_checker = 0 , select = 0 , switched = 0 , btn_bounce_flag = 1 , timeout_checker = 0 , first_pulse_measured = 0 ;
-volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , clear_graph_en = 0 , BPM_en = 0 , interval_check = 0 ;
+volatile uint8_t clear_en = 0 , graph_en = 1 , snapshot_en = 0 , switch_graph = 0 , BPM_en = 0 , interval_check = 0 ;
 volatile uint16_t pulse_duration = 0 ;
-double BPM = 0.0 , displayed_BPM = 0.0 ;
-double datapoints [ NUM_DATAPOINTS ] ;
+double BPM = 0.0 , displayed_BPM = 0.0 , temp_diff = 0.0 ;
+double pulse_datapoints [ NUM_DATAPOINTS ] , temp_datapoints [ NUM_DATAPOINTS ] ;
 char text [ MAX_CHARS_IN_ROW ] ;
 const char indicator [ ] = "->" ;
-uint8_t current_datapoint_pos = 0 , saved_datapoints = 0 , no_data_flag = 0 ;
+uint8_t current_datapoint_pos = 0 , saved_datapoints = 0 ;
 
 ISR ( TIMER2_COMPA_vect )  {
   cli ( ) ;
@@ -112,7 +103,6 @@ ISR ( TIMER2_COMPA_vect )  {
 
 ISR ( TIMER1_COMPA_vect ) {
   cli ( ) ;
-  TCNT0 = 0x00 ;        // Reset interval after an overflow
   interval_check = 0 ; 
   TCNT1 = 0x0000 ;
   TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
@@ -131,10 +121,8 @@ ISR ( TIMER0_COMPA_vect ) {
     case 2 :
       pulse_duration = TCNT1 ;
       interval_check = 0 ;
-      TCNT1 = 0x0000 ;
       TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
       BPM_en = 1 ;
-      first_pulse_measured = 1 ;
       break ;
     default :
       break ;
@@ -164,16 +152,15 @@ void setup_Timers ( void ) {
   TIMSK2 = ( 1 << OCIE2A ) ; // Enable COMPA Interrupt
 
   // At first, stop pulse count
-  PORTB |= ( 1 << Heart_Enable ) ;  // Turn off Enable pin
+  //PORTB |= ( 1 << Heart_Enable ) ;  // Turn off Enable pin
   pulse_duration = 0 ;
 }
 
-uint8_t clearDataPoints ( double data [ ] , uint8_t data_length ) {
+void clearDataPoints ( double data [ ] , uint8_t data_length ) {
   uint8_t ctr ;
   for ( ctr = 0 ; ctr < data_length ; ctr++ ) {
     data [ ctr ] = 0.0 ;
   }
-  return 1 ;
 }
 
 uint8_t allDatapointsEqual ( double data [ ] , uint8_t stop_point ) {
@@ -225,18 +212,15 @@ void findSmallestAndBiggest ( double data [ ] , double *min , double *max , uint
   * max = biggest ;
 }
 
-void drawDataPoints ( double data [ ] , uint8_t stop_position ) {
-  uint8_t halver ;
-
+void drawDataPoints ( double data [ ] , uint8_t stop_position , graph_display_t DISPLAY_TYPE ) {
   if ( stop_position <= MIN_DATAPOINTS ) {
-    char MIN_DATAPOINTS_BUF [ 2 ] ;
-    itoa ( MIN_DATAPOINTS , MIN_DATAPOINTS_BUF , NUM_BASE ) ;
-    ssd1306_printFixed ( 2 , 8 , "Minimum of" , STYLE_NORMAL ) ;
-    ssd1306_printFixed ( 10 , 16 , MIN_DATAPOINTS_BUF , STYLE_BOLD ) ;
-    ssd1306_printFixed ( 25 , 16 , "datapoints" , STYLE_NORMAL ) ;
-    ssd1306_printFixed ( 15 , 24 , "have to be given!" , STYLE_NORMAL ) ;
+    ssd1306_printFixed ( 10 , 24 , "Min 2 datapoints" , STYLE_BOLD ) ;
+    ssd1306_printFixed ( 10 , 32 , "have to be given!" , STYLE_BOLD ) ;
     return ;
   }
+
+  uint8_t halver , ctr , x1 = 3 , x2 , y1 , y2 , offset ;
+  double MIN , MAX ;
 
   switch ( allDatapointsEqual ( data , stop_position ) ) {
     case 0 :
@@ -248,11 +232,8 @@ void drawDataPoints ( double data [ ] , uint8_t stop_position ) {
     default :
       break ;
   }
-
-  uint8_t ctr , x1 = 3 , x2 , y1 , y2 , offset ;
-  double MIN , MAX ;
   
-  findSmallestAndBiggest ( datapoints , &MIN , &MAX , saved_datapoints ) ;
+  findSmallestAndBiggest ( data , &MIN , &MAX , stop_position ) ;
 
   offset = (uint8_t) floor ( (double) OLED_WIDTH / stop_position ) ;
   x2 = offset ;
@@ -265,7 +246,17 @@ void drawDataPoints ( double data [ ] , uint8_t stop_position ) {
     y1 = y2 ;
     x2 += offset ;
   }
-  snprintf ( text , MAX_CHARS_IN_ROW , "Min %.0f Max %.0f" , MIN , MAX ) ;
+
+  switch ( DISPLAY_TYPE ) {
+    case PULSE :
+      snprintf ( text , MAX_CHARS_IN_ROW , "BPM:   %.0f  |  %.0f" , MIN , MAX ) ;
+      break ;
+    case TEMP :
+      snprintf ( text , MAX_CHARS_IN_ROW , "dT:   %.2f  |  %.2f" , MIN , MAX ) ;
+      break ;
+    default :
+      break ;
+  }
   ssd1306_printFixed ( 0 , 0 , text , STYLE_NORMAL ) ;
 }
 
@@ -278,9 +269,6 @@ void shiftDataPoints ( double data [ ] , uint8_t data_length , double new_data )
 }
 
 void init_Pins ( void ) {
-  DDRB = ( 1 << Heart_Enable ) | ( 1 << Onboard_LED ) ;   // Enable pin as Output for the PMOS
-  PORTB = ( 1 << Heart_Enable ) ;  // Turn off at first
-
   DDRC = 0xF0 ;  // Declare Analogue pins as Inputs
   PORTC = 0x30 ; // Set SDA & SCL pins to HIGH for I2C communication
 
@@ -312,40 +300,35 @@ uint16_t read_ADC ( const uint8_t channel ) {
 
 void realTimeData ( ) {
   uint16_t potval ;
-  //uint8_t samples = 0 ;
-  double temp_analog , temp_digital /*, avg_BPM = 0.0*/ ;
+  uint8_t ctr ;
+  double temp_analog = 0.0 , temp_digital = 0.0 ;
   
-  temp_digital = get_temperature ( ) ;
-  potval = read_ADC ( Temp_Input ) ;
-  temp_analog = convertInterval ( ( ADC_MAX_VAL - (double) potval ) , ADC_MIN_VAL , ADC_MAX_VAL , ARMPIT_MIN_TEMP , ARMPIT_MAX_TEMP ) ;
+  for ( ctr = 0 ; ctr < MAX_TEMP_SAMPLES ; ctr++ ) {
+    temp_digital += get_temperature ( ) ;
+    potval = read_ADC ( Temp_Input ) ;
+    temp_analog += convertInterval ( ( ADC_MAX_VAL - (double) potval ) , ADC_MIN_VAL , ADC_MAX_VAL , ARMPIT_MIN_TEMP , ARMPIT_MAX_TEMP ) ;
+  }
 
-  snprintf ( text , MAX_CHARS_IN_ROW , "Pulse [BPM]:" ) ;
+  temp_digital /= MAX_TEMP_SAMPLES ;
+  temp_analog /= MAX_TEMP_SAMPLES ;
+  temp_diff = ( temp_analog - temp_digital ) >= 0.0 ? ( temp_analog - temp_digital ) : ( temp_digital - temp_analog ) ;
+
+  snprintf ( text , MAX_CHARS_IN_ROW , "Finger temp: %.2f " , temp_digital ) ;
   ssd1306_printFixed ( 3 , 24 , text , STYLE_NORMAL ) ;
-
-  snprintf ( text , MAX_CHARS_IN_ROW , "Armpit  [C]: %.2f " , temp_analog ) ;
+  snprintf ( text , MAX_CHARS_IN_ROW , "Armpit temp: %.2f " , temp_analog ) ;
   ssd1306_printFixed ( 3 , 32 , text , STYLE_NORMAL ) ;
-
-  snprintf ( text , MAX_CHARS_IN_ROW , "Finger  [C]: %.2f " , temp_digital ) ;
+  snprintf ( text , MAX_CHARS_IN_ROW , "Temp. diff: %.2f " , temp_diff ) ;
   ssd1306_printFixed ( 3 , 40 , text , STYLE_NORMAL ) ;
 
   if ( BPM_en ) {
     BPM_en = 0 ;
     BPM = 120.0 / convertInterval ( (double) pulse_duration , 0.0 , (double) OCR1_VAL , 0.0 , PULSE_GATHER_INTERVAL / 1000.0 ) ;
-
+    
     if ( BPM <= BPM_UPPER_LIMIT && BPM >= BPM_LOWER_LIMIT ) {
       displayed_BPM = BPM ;
-      snprintf ( text , MAX_CHARS_IN_ROW , "Pulse [BPM]: %.0f   " , displayed_BPM ) ;
-      ssd1306_printFixed ( 3 , 24 , text , STYLE_NORMAL ) ;
-      /*samples++ ;
-      avg_BPM += BPM ;
-      if ( samples >= MAX_SAMPLES ) { // Taking the average to smooth out the BPM reading
-        avg_BPM /= samples ;
-        snprintf ( text , MAX_CHARS_IN_ROW , "Pulse [BPM]: %.0f   " , avg_BPM ) ;
-        ssd1306_printFixed ( 3 , 24 , text , STYLE_NORMAL ) ;
-        displayed_BPM = avg_BPM ;
-        avg_BPM = 0.0 ;
-        samples = 0 ;
-      }*/
+      first_pulse_measured = 1 ;
+      snprintf ( text , MAX_CHARS_IN_ROW , "Last pulse: %.0f BPM " , displayed_BPM ) ;
+      ssd1306_printFixed ( 3 , 16 , text , STYLE_NORMAL ) ;
     }
   }
 }
@@ -367,10 +350,11 @@ ISR ( INT0_vect ) {
         switch ( menu_checker ) {
           case 0 :
             snapshot_en = 1 ;
+            first_pulse_measured = 0 ;
             break ;
           case 1 :
             graph_en = 1 ;
-            clear_graph_en = 1 ;
+            switch_graph = !switch_graph ;
             break ;
           default :
             break ;
@@ -398,10 +382,9 @@ ISR ( INT1_vect ) {
 
       case 0 :
         switched = 0 ;
-        first_pulse_measured = 0 ;
         // Stop pulse count
-        //PORTB |= ( 1 << Heart_Enable ) ;  // Turn off Enable pin
-        TCCR0B = 0x00 ;                   // Disable Counter0
+        TCCR0B = 0x00 ;                     // Disable Counter0
+        TCCR1B &= ~( ( 1 << CS12 ) | ( 1 << CS10 ) ) ;   // Disable Timer1
         pulse_duration = 0 ;
         menu_selector = MENU ;
         break ;
@@ -411,7 +394,6 @@ ISR ( INT1_vect ) {
           case 0 :
             menu_selector = DATA ;
             // Start pulse count
-            //PORTB &= ~( 1 << Heart_Enable ) ;  // Turn on Enable pin
             // External Clock Source on PD4, triggered at a rising edge
             // Start Counter0 with prescalers set to 1024
             TCNT0 = 0x00 ;    // Reset Counter0 value
@@ -436,8 +418,7 @@ int main ( void ) {
   EFontStyle real_style , graph_style ;
   uint8_t menu_data_x , menu_graph_x , indicator_pos_y , LM75_accessed ;
   /*uint16_t bat_ADC_reading ;
-  double bat_voltage ;
-  char bat_volt_str [ MAX_CHARS_PER_NUM ] ;*/
+  double bat_voltage ;*/
 
   init_Pins ( ) ; 
   setup_Timers ( ) ;
@@ -450,10 +431,9 @@ int main ( void ) {
   ssd1306_setFixedFont ( ssd1306xled_font6x8 ) ;
   drawBoundary ( MENU ) ;
 
-  //i2c_init ( ) ;
   LM75_accessed = lm75_init ( ) ;
-
-  no_data_flag = clearDataPoints ( datapoints , NUM_DATAPOINTS ) ;
+  clearDataPoints ( pulse_datapoints , NUM_DATAPOINTS ) ;
+  clearDataPoints ( temp_datapoints , NUM_DATAPOINTS ) ;
 
   while ( 1 ) {
 
@@ -466,15 +446,12 @@ int main ( void ) {
     switch ( select ) {
 
       case 0 :
-        /*bat_ADC_reading = read_ADC ( Bat_Input ) ;
-        bat_voltage = ( bat_ADC_reading * BAT_MAX_VOLTAGE ) / ADC_MAX_VAL ;
-        dtostrf ( bat_voltage , MAX_CHARS_PER_NUM , DECIMAL_PRECISION , bat_volt_str ) ;
-        ssd1306_printFixed ( MENU_BAT_X + ( 14 * CHAR_WIDTH ) , MENU_BAT_Y , bat_volt_str , STYLE_NORMAL ) ;*/
-
         if ( !switched ) {
           switched = 1 ;
-          
-          //ssd1306_printFixed ( MENU_BAT_X , MENU_BAT_Y , "Bat. volt.: " , STYLE_NORMAL ) ;
+          /*bat_ADC_reading = read_ADC ( Bat_Input ) ;
+          bat_voltage = convertInterval ( (double) bat_ADC_reading , ADC_MIN_VAL , ADC_MAX_VAL , BAT_MIN_VOLTAGE , BAT_MAX_VOLTAGE ) ;
+          snprintf ( text , MAX_CHARS_IN_ROW , "Bat. voltage: %.2f  " , bat_voltage ) ;
+          ssd1306_printFixed ( 3 , 48 , text , STYLE_NORMAL ) ;*/
 
           if ( LM75_accessed ) {
             switch ( menu_checker ) {
@@ -513,44 +490,37 @@ int main ( void ) {
 
               if ( snapshot_en && first_pulse_measured ) {
                 snapshot_en = 0 ;
-                no_data_flag = 0 ;
+
                 if ( saved_datapoints < NUM_DATAPOINTS ) {
-                  datapoints [ current_datapoint_pos ] = displayed_BPM ;
+                  pulse_datapoints [ current_datapoint_pos ] = displayed_BPM ;
+                  temp_datapoints [ current_datapoint_pos ] = temp_diff ;
                   current_datapoint_pos++ ;
                   saved_datapoints++ ;
                 }
 
-                else shiftDataPoints ( datapoints , NUM_DATAPOINTS , displayed_BPM ) ;
+                else {
+                  shiftDataPoints ( pulse_datapoints , NUM_DATAPOINTS , displayed_BPM ) ;
+                  shiftDataPoints ( temp_datapoints , NUM_DATAPOINTS , temp_diff ) ;
+                }
               }
               break ;
 
             case 1 :
-
               if ( graph_en ) {
                 graph_en = 0 ;
-
-                if ( clear_graph_en ) {
-                  clear_graph_en = 0 ;
-                  no_data_flag = clearDataPoints ( datapoints , NUM_DATAPOINTS ) ;
-                  saved_datapoints = 0 ;
-                  current_datapoint_pos = 0 ;
-                }
-
                 ssd1306_clearScreen ( ) ;
-
-                switch ( no_data_flag ) {
+                switch ( switch_graph ) {
                   case 0 :
-                    drawDataPoints ( datapoints , saved_datapoints ) ;
+                    drawDataPoints ( pulse_datapoints , saved_datapoints , PULSE ) ;
                     break ;
                   case 1 :
-                    ssd1306_printFixed ( 8 , 32 , "NO DATA TO DISPLAY" , STYLE_BOLD ) ;
+                    drawDataPoints ( temp_datapoints , saved_datapoints , TEMP ) ;
                     break ;
                   default :
                     break ;
                 }
               }
               break ;
-
             default :
               break ;
           }
