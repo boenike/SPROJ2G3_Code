@@ -12,6 +12,9 @@
 #define Right_Button PD3
 #define Heart_Input  PD4
 
+#define ADC_MAX_VAL 1023.0F
+#define ADC_MIN_VAL 0.0F
+
 #define OLED_WIDTH  128
 #define OLED_HEIGHT 64
 
@@ -24,8 +27,10 @@
 #define MAX_CHARS_PER_NUM 5
 #define MAX_CHARS_IN_ROW  20
 
+#define VREF 5.0F
 #define BAT_MAX_VOLTAGE 4.2F
-#define BAT_MIN_VOLTAGE 3.1F
+#define BAT_MIN_VOLTAGE 3.0F
+#define BAT_MAX_READING floor ( ( ADC_MAX_VAL * BAT_MAX_VOLTAGE ) / VREF )
 
 #define BPM_LOWER_LIMIT      30.0F
 #define BPM_UPPER_LIMIT      200.0F
@@ -37,11 +42,8 @@
 #define NUM_DATAPOINTS 20
 #define MIN_DATAPOINTS 2
 
-#define ADC_MAX_VAL 1023.0F
-#define ADC_MIN_VAL 0.0F
-
-#define ARMPIT_MIN_TEMP 18.0F
-#define ARMPIT_MAX_TEMP 45.0F
+#define ARMPIT_MIN_TEMP 18.0F   // Minimum temperature reading - based on Op-amp circuit
+#define ARMPIT_MAX_TEMP 45.0F   // Maximum temperature reading - based on Op-amp circuit
 
 #define DECIMAL_PRECISION 2
 #define NUM_BASE          10
@@ -57,17 +59,17 @@
 #define OCR1_VAL                 ( uint16_t ) floor ( ( ( F_CPU / PRESCALER ) * ( PULSE_GATHER_INTERVAL / 1000.0 ) ) - 1 )
 #define OCR2_VAL                 ( uint8_t )  floor ( ( ( F_CPU / PRESCALER ) * ( DELAY_TIME / 1000.0 ) ) - 1 )
 
-#define MENU_CHECKER           ( uint16_t ) ( 1 << 0  )
-#define SELECT                 ( uint16_t ) ( 1 << 1  )
-#define SWITCHED               ( uint16_t ) ( 1 << 2  )
-#define BTN_BOUNCE_FLAG        ( uint16_t ) ( 1 << 3  )
-#define FIRST_PULSE_MEASURED   ( uint16_t ) ( 1 << 4  )
-#define CLEAR_EN               ( uint16_t ) ( 1 << 5  )
-#define GRAPH_EN               ( uint16_t ) ( 1 << 6  )
-#define SNAPSHOT_EN            ( uint16_t ) ( 1 << 7  )
-#define SWITCH_GRAPH           ( uint16_t ) ( 1 << 8  )
-#define BPM_EN                 ( uint16_t ) ( 1 << 9  )
-#define MENU_SELECTOR          ( uint16_t ) ( 1 << 10 )
+#define MENU_CHECKER           ( ( uint16_t ) ( 1 << 0  ) )
+#define SELECT                 ( ( uint16_t ) ( 1 << 1  ) )
+#define SWITCHED               ( ( uint16_t ) ( 1 << 2  ) )
+#define BTN_BOUNCE_FLAG        ( ( uint16_t ) ( 1 << 3  ) )
+#define FIRST_PULSE_MEASURED   ( ( uint16_t ) ( 1 << 4  ) )
+#define CLEAR_EN               ( ( uint16_t ) ( 1 << 5  ) )
+#define GRAPH_EN               ( ( uint16_t ) ( 1 << 6  ) )
+#define SNAPSHOT_EN            ( ( uint16_t ) ( 1 << 7  ) )
+#define SWITCH_GRAPH           ( ( uint16_t ) ( 1 << 8  ) )
+#define BPM_EN                 ( ( uint16_t ) ( 1 << 9  ) )
+#define MENU_SELECTOR          ( ( uint16_t ) ( 1 << 10 ) )
 
 #ifdef __cplusplus
 }
