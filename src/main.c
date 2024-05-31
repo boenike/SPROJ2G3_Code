@@ -3,7 +3,7 @@
  * Campus: Sonderborg
  * File: main.c
  * Author: Bence Toth
- * Date: 27/05/2024
+ * Date: 31/05/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) via I2C
@@ -226,7 +226,7 @@ void realTimeData ( ) {
   for ( uint8_t ctr = 0 ; ctr < MAX_TEMP_SAMPLES ; ctr++ ) {
     temp_digital += get_temperature ( ) ;
     potval = read_ADC ( Temp_Input ) ;
-    temp_analog += convertInterval ( ( ADC_MAX_VAL - (double) potval ) , ADC_MIN_VAL , ADC_MAX_VAL , ARMPIT_MIN_TEMP , ARMPIT_MAX_TEMP ) ;
+    temp_analog += convertInterval ( ( ADC_MAX_VAL - ( double ) potval ) , ADC_MIN_VAL , ADC_MAX_VAL , ARMPIT_MIN_TEMP , ARMPIT_MAX_TEMP ) ;
   }
 
   // Averaging out the temperature values
@@ -234,12 +234,13 @@ void realTimeData ( ) {
   temp_analog /= MAX_TEMP_SAMPLES ;
   temp_diff = ( temp_analog - temp_digital ) >= 0.0 ? ( temp_analog - temp_digital ) : ( temp_digital - temp_analog ) ;
 
+  ssd1306_printFixed ( 3 , 8 , "Last pulse:" , STYLE_NORMAL ) ;
   snprintf ( text , MAX_CHARS_IN_ROW , "Finger temp: %5.2f " , temp_digital ) ;
   ssd1306_printFixed ( 3 , 24 , text , STYLE_NORMAL ) ;
   snprintf ( text , MAX_CHARS_IN_ROW , "Armpit temp: %5.2f " , temp_analog ) ;
   ssd1306_printFixed ( 3 , 32 , text , STYLE_NORMAL ) ;
-  snprintf ( text , MAX_CHARS_IN_ROW , "Temp. diff : % 5.2f " , temp_diff ) ;
-  ssd1306_printFixed ( 3 , 40 , text , STYLE_NORMAL ) ;
+  snprintf ( text , MAX_CHARS_IN_ROW , "Temp. diff: % 5.2f " , temp_diff ) ;
+  ssd1306_printFixed ( 3 , 48 , text , STYLE_NORMAL ) ;
 
   if ( flags & BPM_EN ) {   // Convert time period to BPM value if a reading is triggered
     flags &= ~BPM_EN ;      // Check the timer value whether it is between the desired interval
@@ -247,8 +248,8 @@ void realTimeData ( ) {
     if ( BPM >= BPM_LOWER_LIMIT && BPM <= BPM_UPPER_LIMIT ) {
       displayed_BPM = BPM ;
       flags |= FIRST_PULSE_MEASURED ;
-      snprintf ( text , MAX_CHARS_IN_ROW , "Last pulse : % 3.0f BPM " , displayed_BPM ) ;
-      ssd1306_printFixed ( 3 , 16 , text , STYLE_NORMAL ) ;
+      snprintf ( text , MAX_CHARS_IN_ROW , "Last pulse: %3.0f BPM " , displayed_BPM ) ;
+      ssd1306_printFixed ( 3 , 8 , text , STYLE_NORMAL ) ;
     }
   }
 }
@@ -320,10 +321,11 @@ ISR ( INT1_vect ) {
 
 int main ( void ) {
   EFontStyle real_style , graph_style ;
-  uint8_t menu_data_x , menu_graph_x , indicator_pos_y , LM75_accessed ;
-  flags |= BTN_BOUNCE_FLAG | GRAPH_EN ;
-  /*uint16_t bat_ADC_reading ;
-  double bat_voltage ;*/
+  uint8_t menu_data_x , menu_graph_x , indicator_pos_y , LM75_ACCESSED ;
+  //uint16_t bat_ADC_reading ;
+  //double bat_pctg ;
+
+  flags |= ( BTN_BOUNCE_FLAG | GRAPH_EN ) ; // Initialize wanted flags at the start
 
   init_Pins ( ) ; 
   setup_Timers ( ) ;
@@ -336,13 +338,14 @@ int main ( void ) {
   ssd1306_setFixedFont ( ssd1306xled_font6x8 ) ;
   drawBoundary ( ) ;
 
-  LM75_accessed = lm75_init ( ) ;
-  clearDataPoints ( pulse_datapoints , NUM_DATAPOINTS ) ;
+  LM75_ACCESSED = lm75_init ( ) ;   // Try to access the LM75 temperature sensor via I2C
+
+  clearDataPoints ( pulse_datapoints , NUM_DATAPOINTS ) ;   // Reset the data holding arrays at the start
   clearDataPoints ( temp_datapoints , NUM_DATAPOINTS ) ;
 
   while ( 1 ) {
 
-    if ( ( flags & CLEAR_EN ) && LM75_accessed ) {
+    if ( ( flags & CLEAR_EN ) && LM75_ACCESSED ) {
       flags &= ~CLEAR_EN ;
       ssd1306_clearScreen ( ) ;
       if ( !( flags & SWITCHED ) || ( flags & MENU_SELECTOR ) ) { drawBoundary ( ) ; }
@@ -352,12 +355,13 @@ int main ( void ) {
       case 0 :
         if ( !( flags & SWITCHED ) ) {
           flags |= SWITCHED ;
+
           /*bat_ADC_reading = read_ADC ( Bat_Input ) ;
-          bat_voltage = convertInterval ( (double) bat_ADC_reading , ADC_MIN_VAL , ADC_MAX_VAL , BAT_MIN_VOLTAGE , BAT_MAX_VOLTAGE ) ;
-          snprintf ( text , MAX_CHARS_IN_ROW , "Bat. voltage: %.2f  " , bat_voltage ) ;
+          bat_pctg = ( 100 * convertInterval ( ( double ) bat_ADC_reading , ADC_MIN_VAL , BAT_MAX_READING , BAT_MIN_VOLTAGE , BAT_MAX_VOLTAGE ) ) / BAT_MAX_VOLTAGE ;
+          snprintf ( text , MAX_CHARS_IN_ROW , "Bat. level: %.2f%%  " , bat_pctg ) ;
           ssd1306_printFixed ( 3 , 48 , text , STYLE_NORMAL ) ;*/
 
-          if ( LM75_accessed ) {
+          if ( LM75_ACCESSED ) {
             switch ( flags & MENU_CHECKER ) {
               case 0 :
                 real_style = STYLE_BOLD ;
@@ -385,7 +389,7 @@ int main ( void ) {
         break ;
 
       case SELECT :
-        if ( LM75_accessed ) {
+        if ( LM75_ACCESSED ) {
           switch ( flags & MENU_CHECKER ) {
             case 0 :
               realTimeData ( ) ;
