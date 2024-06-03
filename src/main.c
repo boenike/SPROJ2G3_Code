@@ -3,7 +3,7 @@
  * Campus: Sonderborg
  * File: main.c
  * Author: Bence Toth
- * Date: 31/05/2024
+ * Date: 03/06/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) via I2C
