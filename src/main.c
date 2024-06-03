@@ -243,9 +243,9 @@ void realTimeData ( ) {
   ssd1306_printFixed ( 3 , 48 , text , STYLE_NORMAL ) ;
 
   if ( flags & BPM_EN ) {   // Convert time period to BPM value if a reading is triggered
-    flags &= ~BPM_EN ;      // Check the timer value whether it is between the desired interval
+    flags &= ~BPM_EN ;
     BPM = ( 1000.0 * PULSE_BPM_MULTIPLIER ) / convertInterval ( ( double ) pulse_duration , 0.0 , ( double ) OCR1_VAL , 0.0 , PULSE_GATHER_INTERVAL ) ;
-    if ( BPM >= BPM_LOWER_LIMIT && BPM <= BPM_UPPER_LIMIT ) {
+    if ( BPM >= BPM_LOWER_LIMIT && BPM <= BPM_UPPER_LIMIT ) {   // Check the timer value whether it is between the desired interval
       displayed_BPM = BPM ;
       flags |= FIRST_PULSE_MEASURED ;
       snprintf ( text , MAX_CHARS_IN_ROW , "Last pulse: %3.0f BPM " , displayed_BPM ) ;
@@ -382,7 +382,7 @@ int main ( void ) {
           
             ssd1306_printFixed ( START_POS_X , indicator_pos_y , indicator , STYLE_NORMAL ) ;
             ssd1306_printFixed ( menu_data_x , MENU_DATA_Y , " Real-time data  " , real_style ) ;
-            ssd1306_printFixed ( menu_graph_x , MENU_GRAPH_Y , " Pulse graph  " , graph_style ) ;
+            ssd1306_printFixed ( menu_graph_x , MENU_GRAPH_Y , " Graph plotting  " , graph_style ) ;
           }
           else { printErrorMessage ( ) ; }
         }
