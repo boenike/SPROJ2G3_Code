@@ -3,7 +3,7 @@
  * Campus: Sonderborg
  * File: main.c
  * Author: Bence Toth
- * Date: 03/06/2024
+ * Date: 20/06/2024
  * Course: BEng in Electronics
  * Semester: 2nd
  * Display: 0.96" SSD1306 OLED (128x64) via I2C
@@ -125,9 +125,9 @@ void drawBoundary ( ) {
 }
 
 void printErrorMessage ( void ) {
-  ssd1306_printFixed ( 5 , 30 , "LM75 inaccessible!" , STYLE_NORMAL ) ;
-  ssd1306_printFixed ( 20 , 40 , "Please insert" , STYLE_NORMAL ) ;
-  ssd1306_printFixed ( 5 , 50 , "external temp module" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 10 , 16 , "LM75 inaccessible" , STYLE_NORMAL ) ;
+  ssd1306_printFixed ( 55 , 24 , "OR" , STYLE_NORMAL ) ;
+  ssd1306_printFixed (  5 , 32 , "Low battery voltage" , STYLE_NORMAL ) ;
 }
 
 void findSmallestAndBiggest ( double data [ ] , double *min , double *max , uint8_t stop_pos ) {
@@ -211,14 +211,15 @@ void init_ADC ( void ) {
   // Enable ADC and set prescaler to 128
 }
 
-uint16_t read_ADC ( const uint8_t channel ) {
-	ADMUX |= ( channel & 0x07 ) ;               // Cut off channel value to the limited bits available
-	ADCSRA |= ( 1 << ADSC ) ;                   // Start ADC conversion
-  while ( ADCSRA & ( 1 << ADSC ) ) ;          // Wait while the conversion completes
-  return ( ( uint16_t ) ADCL + ( ( uint16_t ) ADCH << 8 ) ) ;  // Bit-shift High nibble to get the result of the conversion
+uint16_t read_ADC ( uint8_t channel ) {
+  ADMUX &= 0xF0 ;                     // Clear previous channels
+	ADMUX |= ( channel & 0x07 ) ;       // Set the desired channel
+	ADCSRA |= ( 1 << ADSC ) ;           // Start ADC conversion
+  while ( ADCSRA & ( 1 << ADSC ) ) ;  // Wait while the conversion completes
+  return ADC ;                        // Return the result of the conversion
 }
 
-void realTimeData ( ) {
+void realTimeData ( void ) {
   uint16_t potval ;
   double temp_analog = 0.0 , temp_digital = 0.0 ;
   
@@ -319,13 +320,27 @@ ISR ( INT1_vect ) {
   }
 }
 
+void get_Battery_Voltage ( void ) {
+  uint16_t bat_ADC_reading ;
+  double bat_voltage , bat_pctg ;
+
+  bat_ADC_reading = read_ADC ( Bat_Input ) ;
+  bat_voltage = convertInterval ( ( double ) bat_ADC_reading , ADC_MIN_VAL , BAT_MAX_READING , BAT_MIN_VOLTAGE , BAT_MAX_VOLTAGE ) ;
+  bat_pctg    = convertInterval ( bat_voltage , BAT_MIN_VOLTAGE , BAT_MAX_VOLTAGE , 0.0 , 100.0 ) ;
+
+  if ( !( flags & SELECT ) ) {  // Only display battery level when in the main Menu
+    snprintf ( text , MAX_CHARS_IN_ROW , "Bat. level: %.0f%%  " , bat_pctg ) ;
+    ssd1306_printFixed ( 10 , 48 , text , STYLE_NORMAL ) ;
+  }
+
+  if ( bat_voltage <= BAT_THRESH_VOLTAGE ) { flags &= ~BAT_EN ; } // Reset battery flag if below threshold voltage
+}
+
 int main ( void ) {
   EFontStyle real_style , graph_style ;
   uint8_t menu_data_x , menu_graph_x , indicator_pos_y , LM75_ACCESSED ;
-  //uint16_t bat_ADC_reading ;
-  //double bat_pctg ;
 
-  flags |= ( BTN_BOUNCE_FLAG | GRAPH_EN ) ; // Initialize wanted flags at the start
+  flags |= ( BTN_BOUNCE_FLAG | GRAPH_EN | BAT_EN ) ; // Initialize wanted flags at the start
 
   init_Pins ( ) ; 
   setup_Timers ( ) ;
@@ -355,13 +370,9 @@ int main ( void ) {
       case 0 :
         if ( !( flags & SWITCHED ) ) {
           flags |= SWITCHED ;
+          get_Battery_Voltage ( ) ;
 
-          /*bat_ADC_reading = read_ADC ( Bat_Input ) ;
-          bat_pctg = ( 100 * convertInterval ( ( double ) bat_ADC_reading , ADC_MIN_VAL , BAT_MAX_READING , BAT_MIN_VOLTAGE , BAT_MAX_VOLTAGE ) ) / BAT_MAX_VOLTAGE ;
-          snprintf ( text , MAX_CHARS_IN_ROW , "Bat. level: %.2f%%  " , bat_pctg ) ;
-          ssd1306_printFixed ( 3 , 48 , text , STYLE_NORMAL ) ;*/
-
-          if ( LM75_ACCESSED ) {
+          if ( LM75_ACCESSED && ( flags & BAT_EN ) ) {
             switch ( flags & MENU_CHECKER ) {
               case 0 :
                 real_style = STYLE_BOLD ;
@@ -389,7 +400,7 @@ int main ( void ) {
         break ;
 
       case SELECT :
-        if ( LM75_ACCESSED ) {
+        if ( LM75_ACCESSED && ( flags & BAT_EN ) ) {
           switch ( flags & MENU_CHECKER ) {
             case 0 :
               realTimeData ( ) ;
