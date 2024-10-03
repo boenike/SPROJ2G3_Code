@@ -1,5 +1,5 @@
 # SPROJ2G3_Code
-Here I'll try to implement the firmware for the semester project in C programming language.  
+Here I'll try to implement the firmware of our "Stress Measurement Device" project in C programming language.  
 
 MCU -> ATmega328P  
 
